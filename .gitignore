@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.pyc_tmp/
+.pycache_prefix/
+.DS_Store
+Thumbs.db
+output_dir/

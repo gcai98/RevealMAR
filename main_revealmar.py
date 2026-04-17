@@ -1,4 +1,5 @@
 import argparse
+import copy
 import datetime
 import numpy as np
 import os
@@ -8,8 +9,8 @@ from pathlib import Path
 import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
-import torchvision.transforms as transforms
 import torchvision.datasets as datasets
+import torchvision.transforms as transforms
 
 from util.crop import center_crop_arr
 import util.misc as misc
@@ -17,51 +18,42 @@ from util.misc import NativeScalerWithGradNormCount as NativeScaler
 from util.loader import CachedFolder
 
 from models.vae import AutoencoderKL
-from models import aura_mar
-from engine_aura_mar import train_one_epoch, evaluate
-import copy
+from models import revealmar
+from engine_mar import train_one_epoch, evaluate
+
 
 def get_args_parser():
-    parser = argparse.ArgumentParser('AURA-MAR training with Diffusion Loss', add_help=False)
+    parser = argparse.ArgumentParser('RevealMAR training with Diffusion Loss', add_help=False)
     parser.add_argument('--batch_size', default=16, type=int,
                         help='Batch size per GPU (effective batch size is batch_size * # gpus')
     parser.add_argument('--epochs', default=400, type=int)
 
-    # Model parameters
-    parser.add_argument('--model', default='aura_mar_large', type=str, metavar='MODEL',
-                        choices=('aura_mar_base', 'aura_mar_large', 'aura_mar_huge'),
+    parser.add_argument('--model', default='revealmar_large', type=str, metavar='MODEL',
                         help='Name of model to train')
 
-    # VAE parameters
     parser.add_argument('--img_size', default=256, type=int,
                         help='images input size')
-    parser.add_argument('--vae_path', default="pretrained_models/vae/kl16.ckpt", type=str,
-                        help='images input size')
+    parser.add_argument('--vae_path', default='pretrained_models/vae/kl16.ckpt', type=str,
+                        help='VAE checkpoint path')
     parser.add_argument('--vae_embed_dim', default=16, type=int,
-                        help='vae output embedding dimension')
+                        help='VAE output embedding dimension')
     parser.add_argument('--vae_stride', default=16, type=int,
                         help='tokenizer stride, default use KL16')
     parser.add_argument('--patch_size', default=1, type=int,
                         help='number of tokens to group as a patch.')
 
-    # Generation parameters
     parser.add_argument('--num_iter', default=64, type=int,
                         help='number of autoregressive iterations to generate an image')
     parser.add_argument('--num_images', default=50000, type=int,
                         help='number of images to generate')
-    parser.add_argument('--cfg', default=1.0, type=float, help="classifier-free guidance")
-    parser.add_argument('--cfg_schedule', default="linear", type=str)
+    parser.add_argument('--cfg', default=1.0, type=float, help='classifier-free guidance')
+    parser.add_argument('--cfg_schedule', default='linear', type=str)
     parser.add_argument('--label_drop_prob', default=0.1, type=float)
-    parser.add_argument('--eval_freq', type=int, default=40, help='evaluation frequency')
-    parser.add_argument('--save_last_freq', type=int, default=5, help='save last frequency')
-    parser.add_argument('--online_eval', action='store_true')
     parser.add_argument('--evaluate', action='store_true')
     parser.add_argument('--eval_bsz', type=int, default=64, help='generation batch size')
 
-    # Optimizer parameters
     parser.add_argument('--weight_decay', type=float, default=0.02,
                         help='weight decay (default: 0.02)')
-
     parser.add_argument('--grad_checkpointing', action='store_true')
     parser.add_argument('--lr', type=float, default=None, metavar='LR',
                         help='learning rate (absolute lr)')
@@ -75,7 +67,6 @@ def get_args_parser():
                         help='epochs to warmup LR')
     parser.add_argument('--ema_rate', default=0.9999, type=float)
 
-    # MAR params
     parser.add_argument('--mask_ratio_min', type=float, default=0.7,
                         help='Minimum mask ratio')
     parser.add_argument('--grad_clip', type=float, default=3.0,
@@ -86,14 +77,12 @@ def get_args_parser():
                         help='projection dropout')
     parser.add_argument('--buffer_size', type=int, default=64)
 
-    # Diffusion Loss params
     parser.add_argument('--diffloss_d', type=int, default=12)
     parser.add_argument('--diffloss_w', type=int, default=1536)
-    parser.add_argument('--num_sampling_steps', type=str, default="100")
+    parser.add_argument('--num_sampling_steps', type=str, default='100')
     parser.add_argument('--diffusion_batch_mul', type=int, default=1)
     parser.add_argument('--temperature', default=1.0, type=float, help='diffusion loss sampling temperature')
 
-    # Dataset parameters
     parser.add_argument('--data_path', default='./data/imagenet', type=str,
                         help='dataset path')
     parser.add_argument('--class_num', default=1000, type=int)
@@ -107,7 +96,6 @@ def get_args_parser():
     parser.add_argument('--seed', default=1, type=int)
     parser.add_argument('--resume', default='',
                         help='resume from checkpoint')
-
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
     parser.add_argument('--num_workers', default=10, type=int)
@@ -116,60 +104,35 @@ def get_args_parser():
     parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem')
     parser.set_defaults(pin_mem=True)
 
-    # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
+    parser.add_argument('--eval_freq', type=int, default=40, help='evaluation frequency')
+    parser.add_argument('--save_last_freq', type=int, default=5, help='save last frequency')
+    parser.add_argument('--online_eval', action='store_true')
     parser.add_argument('--local_rank', default=-1, type=int)
     parser.add_argument('--dist_on_itp', action='store_true')
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
 
-    # caching latents
     parser.add_argument('--use_cached', action='store_true', dest='use_cached',
                         help='Use cached latents')
-    parser.set_defaults(use_cached=False)
     parser.add_argument('--cached_path', default='', help='path to cached latents')
-    parser.add_argument('--use_aura_sampling', action='store_true',
-                        help='Enable placeholder AURA sampling hooks.')
-    parser.add_argument('--return_loss_dict', action='store_true',
-                        help='Return a loss dict for AURA-aware logging.')
 
+    parser.add_argument('--planner_hidden_dim', default=128, type=int,
+                        help='hidden dimension for RevealMAR planner')
+    parser.add_argument('--planner_loss_weight', default=1.0, type=float,
+                        help='loss weight for RevealMAR planner')
+    parser.add_argument('--candidate_pool_size', default=8, type=int,
+                        help='candidate pool size for RevealMAR')
+    parser.add_argument('--pseudo_target_type', default='none', type=str,
+                        choices=['none', 'soft', 'hard'],
+                        help='pseudo target type for RevealMAR')
+    parser.add_argument('--budget_mode', default='soft', type=str,
+                        choices=['soft', 'hard'],
+                        help='budget mode for RevealMAR')
+    parser.add_argument('--mixed_policy_ratio', default=0.0, type=float,
+                        help='mixed policy ratio for RevealMAR')
 
-
-    # 新增你的 AURA 参数
-    parser.add_argument('--verifier_hidden_dim', type=int, default=128,
-                        help='Hidden dim for the lightweight verifier.')
-    parser.add_argument('--verifier_num_layers', type=int, default=2)
-    parser.add_argument('--gate_tau', type=float, default=0.5,
-                        help='Generic gating threshold for future AURA policies.')
-    parser.add_argument('--difficulty_alpha', type=float, default=1.0,
-                        help='Weight for uncertainty in difficulty scoring.')
-    parser.add_argument('--difficulty_beta', type=float, default=1.0,
-                        help='Weight for instability in difficulty scoring.')
-    parser.add_argument('--difficulty_gamma', type=float, default=1.0,
-                        help='Weight for inconsistency in difficulty scoring.')
-    parser.add_argument('--tau_d_low', type=float, default=0.25,
-                        help='Low difficulty threshold.')
-    parser.add_argument('--tau_d_high', type=float, default=0.75,
-                        help='High difficulty threshold.')
-    parser.add_argument('--tau_v_high', type=float, default=0.8,
-                        help='High verifier threshold.')
-    parser.add_argument('--tau_v_low', type=float, default=0.2,
-                        help='Low verifier threshold.')
-    parser.add_argument('--tau_v_keep', type=float, default=0.8,
-                        help='Threshold for keep decisions.')
-    parser.add_argument('--tau_v_revise', type=float, default=0.2,
-                        help='Threshold for revise decisions.')
-    parser.add_argument('--tau_drift', type=float, default=0.0,
-                        help='Placeholder drift tolerance.')
-    parser.add_argument('--window_radius', type=int, default=1)
-    parser.add_argument('--topk_windows', type=int, default=4)
-    parser.add_argument('--rerank_K', type=int, default=1)
-    parser.add_argument('--delta_V', type=float, default=0.0)
-    parser.add_argument('--lambda_ver', type=float, default=0.0,
-                        help='Verifier loss weight. Phase 1 keeps this disabled.')
-    parser.add_argument('--lambda_rank', type=float, default=0.0,
-                        help='Rerank loss weight. Phase 1 keeps this disabled.')
     return parser
 
 
@@ -180,8 +143,6 @@ def main(args):
     print("{}".format(args).replace(', ', ',\n'))
 
     device = torch.device(args.device)
-
-    # fix the seed for reproducibility
     seed = args.seed + misc.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -197,7 +158,6 @@ def main(args):
     else:
         log_writer = None
 
-    # augmentation following DiT and ADM
     transform_train = transforms.Compose([
         transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.img_size)),
         transforms.RandomHorizontalFlip(),
@@ -224,12 +184,11 @@ def main(args):
         drop_last=True,
     )
 
-    # define the vae and mar model
     vae = AutoencoderKL(embed_dim=args.vae_embed_dim, ch_mult=(1, 1, 2, 2, 4), ckpt_path=args.vae_path).cuda().eval()
     for param in vae.parameters():
         param.requires_grad = False
 
-    model = aura_mar.__dict__[args.model](
+    model = revealmar.__dict__[args.model](
         img_size=args.img_size,
         vae_stride=args.vae_stride,
         patch_size=args.patch_size,
@@ -245,40 +204,26 @@ def main(args):
         num_sampling_steps=args.num_sampling_steps,
         diffusion_batch_mul=args.diffusion_batch_mul,
         grad_checkpointing=args.grad_checkpointing,
-        use_aura_sampling=args.use_aura_sampling,
-        return_loss_dict=args.return_loss_dict,
-        verifier_hidden_dim=args.verifier_hidden_dim,
-        verifier_num_layers=args.verifier_num_layers,
-        gate_tau=args.gate_tau,
-        difficulty_alpha=args.difficulty_alpha,
-        difficulty_beta=args.difficulty_beta,
-        difficulty_gamma=args.difficulty_gamma,
-        tau_d_low=args.tau_d_low,
-        tau_d_high=args.tau_d_high,
-        tau_v_high=args.tau_v_high,
-        tau_v_low=args.tau_v_low,
-        tau_v_keep=args.tau_v_keep,
-        tau_v_revise=args.tau_v_revise,
-        tau_drift=args.tau_drift,
-        window_radius=args.window_radius,
-        topk_windows=args.topk_windows,
-        rerank_K=args.rerank_K,
-        delta_V=args.delta_V,
-        lambda_ver=args.lambda_ver,
-        lambda_rank=args.lambda_rank,
+        planner_hidden_dim=args.planner_hidden_dim,
+        planner_loss_weight=args.planner_loss_weight,
+        candidate_pool_size=args.candidate_pool_size,
+        pseudo_target_type=args.pseudo_target_type,
+        budget_mode=args.budget_mode,
+        mixed_policy_ratio=args.mixed_policy_ratio,
     )
 
     print("Model = %s" % str(model))
-    # following timm: set wd as 0 for bias and norm layers
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("Number of trainable parameters: {}M".format(n_params / 1e6))
 
     model.to(device)
     model_without_ddp = model
 
-    eff_batch_size = args.batch_size * misc.get_world_size()
+    model_params = list(model_without_ddp.parameters())
+    ema_params = copy.deepcopy(model_params)
 
-    if args.lr is None:  # only base_lr is specified
+    eff_batch_size = args.batch_size * misc.get_world_size()
+    if args.lr is None:
         args.lr = args.blr * eff_batch_size / 256
 
     print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
@@ -289,69 +234,47 @@ def main(args):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
 
-    # no weight decay on bias, norm layers, and diffloss MLP
     param_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
     print(optimizer)
     loss_scaler = NativeScaler()
 
-
-    # resume training / load evaluation weights
-    if args.resume and os.path.exists(os.path.join(args.resume, "checkpoint-last.pth")):
-        print(f"Loading weights from: {args.resume}")
-        
-        # 1. 根据后缀选择加载器
-        if False:
-            checkpoint = load_safetensors(args.resume)
-        else:
-            checkpoint = torch.load(os.path.join(args.resume, "checkpoint-last.pth"), map_location='cpu')
-
-        # 2. 提取状态字典 (处理官方 checkpoint 或 纯权重文件)
-        if 'model' in checkpoint:
-            model_state_dict = checkpoint['model']
-            ema_state_dict = checkpoint.get('model_ema', None)
-        else:
-            # 如果是纯权重文件，直接作为模型字典
-            model_state_dict = checkpoint
-            ema_state_dict = None
-
-        # 3. 加载到模型
-        msg = model_without_ddp.load_state_dict(model_state_dict, strict=False)
-        print(f"Model load message: {msg}")
-
-        # 4. 处理 EMA 参数 (推理时关键)
-        model_params = list(model_without_ddp.parameters())
-        if ema_state_dict is not None:
-            ema_params = [ema_state_dict[name].cuda() for name, _ in model_without_ddp.named_parameters()]
-            print("Loaded EMA parameters from checkpoint.")
-        else:
-            # 如果权重里没带 EMA，则用当前模型参数初始化 EMA，防止 evaluate 时报错
-            ema_params = copy.deepcopy(model_params)
-            print("No EMA found in checkpoint, using model weights for EMA.")
-
-        # 5. 加载优化器等状态 (仅用于断点续训)
+    if args.resume and os.path.exists(os.path.join(args.resume, 'checkpoint-last.pth')):
+        checkpoint = torch.load(os.path.join(args.resume, 'checkpoint-last.pth'), map_location='cpu')
+        load_result = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
+        if load_result.missing_keys:
+            print('Resume missing model keys (likely new RevealMAR params): {}'.format(load_result.missing_keys))
+        if load_result.unexpected_keys:
+            print('Resume unexpected model keys (ignored): {}'.format(load_result.unexpected_keys))
+        if 'model_ema' in checkpoint:
+            ema_state_dict = checkpoint['model_ema']
+            ema_params_new = []
+            ema_missing_keys = []
+            for name, param in model_without_ddp.named_parameters():
+                if name in ema_state_dict:
+                    ema_params_new.append(ema_state_dict[name].to(device))
+                else:
+                    ema_missing_keys.append(name)
+                    ema_params_new.append(param.detach().clone())
+            if ema_missing_keys:
+                print('EMA missing keys in checkpoint, fallback to current params: {}'.format(ema_missing_keys))
+            ema_params = ema_params_new
         if 'optimizer' in checkpoint and 'epoch' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
             args.start_epoch = checkpoint['epoch'] + 1
             if 'scaler' in checkpoint:
                 loss_scaler.load_state_dict(checkpoint['scaler'])
-            print("Optimizer and scaler loaded.")
-        
+        print('Resume checkpoint %s' % args.resume)
+        del checkpoint
     else:
-        model_params = list(model_without_ddp.parameters())
-        ema_params = copy.deepcopy(model_params)
-        print("Training from scratch")
+        print('Training from scratch')
 
-        
-
-    # evaluate FID and IS
     if args.evaluate:
         torch.cuda.empty_cache()
-        evaluate(model_without_ddp, vae, ema_params, args, 0, batch_size=args.eval_bsz, log_writer=log_writer,
-                 cfg=args.cfg, use_ema=True)
+        evaluate(model_without_ddp, vae, ema_params, args, 0,
+                 batch_size=args.eval_bsz, log_writer=log_writer, cfg=args.cfg, use_ema=True)
         return
 
-    # training
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
@@ -367,19 +290,18 @@ def main(args):
             args=args
         )
 
-        # save checkpoint
         if epoch % args.save_last_freq == 0 or epoch + 1 == args.epochs:
-            misc.save_model(args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                            loss_scaler=loss_scaler, epoch=epoch, ema_params=ema_params, epoch_name="last")
+            misc.save_model(args=args, model=model, model_without_ddp=model_without_ddp,
+                            optimizer=optimizer, loss_scaler=loss_scaler, epoch=epoch,
+                            ema_params=ema_params, epoch_name='last')
 
-        # online evaluation
         if args.online_eval and (epoch % args.eval_freq == 0 or epoch + 1 == args.epochs):
             torch.cuda.empty_cache()
-            evaluate(model_without_ddp, vae, ema_params, args, epoch, batch_size=args.eval_bsz, log_writer=log_writer,
-                     cfg=1.0, use_ema=True)
+            evaluate(model_without_ddp, vae, ema_params, args, epoch,
+                     batch_size=args.eval_bsz, log_writer=log_writer, cfg=1.0, use_ema=True)
             if not (args.cfg == 1.0 or args.cfg == 0.0):
-                evaluate(model_without_ddp, vae, ema_params, args, epoch, batch_size=args.eval_bsz // 2,
-                         log_writer=log_writer, cfg=args.cfg, use_ema=True)
+                evaluate(model_without_ddp, vae, ema_params, args, epoch,
+                         batch_size=args.eval_bsz // 2, log_writer=log_writer, cfg=args.cfg, use_ema=True)
             torch.cuda.empty_cache()
 
         if misc.is_main_process():
@@ -387,8 +309,7 @@ def main(args):
                 log_writer.flush()
 
     total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print('Training time {}'.format(total_time_str))
+    print('Training time {}'.format(str(datetime.timedelta(seconds=int(total_time)))))
 
 
 if __name__ == '__main__':
