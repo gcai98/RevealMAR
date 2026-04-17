@@ -125,8 +125,8 @@ def get_args_parser():
     parser.add_argument('--candidate_pool_size', default=8, type=int,
                         help='candidate pool size for RevealMAR')
     parser.add_argument('--pseudo_target_type', default='none', type=str,
-                        choices=['none', 'soft', 'hard'],
-                        help='pseudo target type for RevealMAR')
+                        choices=['none', 'gt_reveal', 'pred_reveal', 'mixed_reveal'],
+                        help='pseudo target variant for RevealMAR scaffolding')
     parser.add_argument('--budget_mode', default='soft', type=str,
                         choices=['soft', 'hard'],
                         help='budget mode for RevealMAR')

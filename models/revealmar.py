@@ -1,8 +1,10 @@
 from functools import partial
 
+import torch
 import torch.nn as nn
 
 from models.mar import MAR
+from util.revealmar_utils import build_candidate_subset, build_pseudo_target
 
 
 class RevealMAR(MAR):
@@ -27,6 +29,14 @@ class RevealMAR(MAR):
 
         super().__init__(**kwargs)
 
+        valid_pseudo_target_types = {'none', 'gt_reveal', 'pred_reveal', 'mixed_reveal'}
+        if self.pseudo_target_type not in valid_pseudo_target_types:
+            raise ValueError(
+                "Unsupported pseudo_target_type {}. Expected one of {}".format(
+                    self.pseudo_target_type, sorted(valid_pseudo_target_types)
+                )
+            )
+
         # Planner head is intentionally separate from baseline diffusion/value path.
         self.planner_head = nn.Sequential(
             nn.Linear(self.decoder_norm.normalized_shape[0], self.planner_hidden_dim),
@@ -36,6 +46,8 @@ class RevealMAR(MAR):
 
         # Runtime debug cache for inspection; not used by baseline training loop.
         self.latest_planner_scores_masked = None
+        self.latest_candidate_indices = None
+        self.latest_pseudo_target = None
 
     def extra_repr(self):
         return (
@@ -75,9 +87,20 @@ class RevealMAR(MAR):
 
         masked_token_count = int(masked_counts[0].item())
         planner_scores_masked = planner_scores[mask_bool].view(planner_scores.size(0), masked_token_count)
+        masked_decoder_tokens = z[mask_bool].view(z.size(0), masked_token_count, z.size(-1))
         self.latest_planner_scores_masked = planner_scores_masked
 
-        # Stub for future phases: pseudo-target utility, mixed policy, and score-budget coupling.
+        candidate_indices = build_candidate_subset(planner_scores_masked, self.candidate_pool_size)
+        pseudo_target = build_pseudo_target(
+            planner_scores_masked,
+            candidate_indices,
+            masked_decoder_tokens,
+            pseudo_target_type=self.pseudo_target_type,
+        )
+        self.latest_candidate_indices = candidate_indices
+        self.latest_pseudo_target = pseudo_target
+
+        # Planner loss remains stubbed in this phase; target construction is intentionally separate.
         planner_aux_loss = planner_scores_masked.new_zeros(())
         return loss + self.planner_loss_weight * planner_aux_loss
 
