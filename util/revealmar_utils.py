@@ -15,6 +15,7 @@ def build_candidate_subset(masked_scores, candidate_pool_size):
 
 def _scatter_candidate_values(base_tensor, candidate_indices, candidate_values):
     """Scatter candidate-only values back to masked-token layout."""
+    candidate_values = candidate_values.to(dtype=base_tensor.dtype, device=base_tensor.device)
     out = torch.zeros_like(base_tensor)
     out.scatter_(dim=1, index=candidate_indices, src=candidate_values)
     return out
