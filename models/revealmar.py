@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import util.misc as misc
 from models.mar import MAR
 from util.revealmar_utils import build_candidate_subset, build_pseudo_target
 
@@ -144,6 +145,20 @@ class RevealMAR(MAR):
         self.latest_planner_aux_loss = planner_aux_loss.detach()
         total_loss = loss + self.planner_loss_weight * planner_aux_loss
         self.latest_total_loss = total_loss.detach()
+
+        log_freq = int(getattr(self, '_revealmar_loss_log_freq', 0) or 0)
+        if log_freq > 0:
+            self._revealmar_fwd_count = getattr(self, '_revealmar_fwd_count', 0) + 1
+            if self._revealmar_fwd_count % log_freq == 0 and misc.is_main_process():
+                print(
+                    '[RevealMAR] fwd={} total_loss={:.6f} diffloss={:.6f} planner_aux_loss={:.6f}'.format(
+                        self._revealmar_fwd_count,
+                        float(self.latest_total_loss),
+                        float(self.latest_diffloss),
+                        float(self.latest_planner_aux_loss),
+                    )
+                )
+
         return total_loss
 
 

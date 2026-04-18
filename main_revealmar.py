@@ -133,6 +133,11 @@ def get_args_parser():
     parser.add_argument('--mixed_policy_ratio', default=0.0, type=float,
                         help='mixed policy ratio for RevealMAR')
 
+    parser.add_argument('--log_revealmar_losses', action='store_true',
+                        help='Print RevealMAR loss decomposition (total, diffloss, planner_aux) during training')
+    parser.add_argument('--log_revealmar_loss_freq', type=int, default=20,
+                        help='Print every N forward passes when --log_revealmar_losses is set')
+
     return parser
 
 
@@ -233,6 +238,10 @@ def main(args):
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
+
+    model_without_ddp._revealmar_loss_log_freq = (
+        int(args.log_revealmar_loss_freq) if args.log_revealmar_losses else 0
+    )
 
     param_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
