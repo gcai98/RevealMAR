@@ -2,6 +2,7 @@ from functools import partial
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from models.mar import MAR
 from util.revealmar_utils import build_candidate_subset, build_pseudo_target
@@ -48,6 +49,7 @@ class RevealMAR(MAR):
         self.latest_planner_scores_masked = None
         self.latest_candidate_indices = None
         self.latest_pseudo_target = None
+        self.latest_planner_aux_loss = None
 
     def extra_repr(self):
         return (
@@ -58,6 +60,37 @@ class RevealMAR(MAR):
             f"budget_mode={self.budget_mode}, "
             f"mixed_policy_ratio={self.mixed_policy_ratio}"
         )
+
+    def _compute_planner_supervision_loss(self, planner_scores_masked, candidate_indices, pseudo_target):
+        """
+        Compute planner supervision only on candidate subset.
+        Pseudo targets are detached to avoid backprop through target construction.
+        """
+        if pseudo_target is None or candidate_indices.numel() == 0:
+            return planner_scores_masked.new_zeros(())
+
+        candidate_scores = torch.gather(planner_scores_masked, dim=1, index=candidate_indices)
+        candidate_targets = torch.gather(pseudo_target.detach(), dim=1, index=candidate_indices)
+
+        # Regression term aligns absolute utility scale on candidate subset.
+        regression_loss = F.mse_loss(candidate_scores, candidate_targets)
+
+        # Pairwise term aligns candidate ranking induced by pseudo-utility.
+        k = candidate_scores.size(1)
+        if k < 2:
+            return regression_loss
+
+        score_diff = candidate_scores.unsqueeze(2) - candidate_scores.unsqueeze(1)
+        target_diff = candidate_targets.unsqueeze(2) - candidate_targets.unsqueeze(1)
+        rank_sign = torch.sign(target_diff)
+
+        pair_mask = torch.triu(torch.ones(k, k, device=candidate_scores.device, dtype=torch.bool), diagonal=1)
+        valid_pair_mask = pair_mask.unsqueeze(0) & (rank_sign != 0)
+        if not valid_pair_mask.any():
+            return regression_loss
+
+        pairwise_loss = F.softplus(-(rank_sign * score_diff))[valid_pair_mask].mean()
+        return regression_loss + pairwise_loss
 
     def forward(self, imgs, labels):
         # class embed
@@ -100,8 +133,12 @@ class RevealMAR(MAR):
         self.latest_candidate_indices = candidate_indices
         self.latest_pseudo_target = pseudo_target
 
-        # Planner loss remains stubbed in this phase; target construction is intentionally separate.
-        planner_aux_loss = planner_scores_masked.new_zeros(())
+        planner_aux_loss = self._compute_planner_supervision_loss(
+            planner_scores_masked=planner_scores_masked,
+            candidate_indices=candidate_indices,
+            pseudo_target=pseudo_target,
+        )
+        self.latest_planner_aux_loss = planner_aux_loss.detach()
         return loss + self.planner_loss_weight * planner_aux_loss
 
 
