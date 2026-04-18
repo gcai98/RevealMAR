@@ -49,7 +49,9 @@ class RevealMAR(MAR):
         self.latest_planner_scores_masked = None
         self.latest_candidate_indices = None
         self.latest_pseudo_target = None
+        self.latest_diffloss = None
         self.latest_planner_aux_loss = None
+        self.latest_total_loss = None
 
     def extra_repr(self):
         return (
@@ -108,6 +110,7 @@ class RevealMAR(MAR):
 
         # diffloss remains the baseline optimization objective.
         loss = self.forward_loss(z=z, target=gt_latents, mask=mask)
+        self.latest_diffloss = loss.detach()
 
         # Planner scores are produced per token, then sliced to masked tokens.
         planner_scores = self.planner_head(z).squeeze(-1)  # [bsz, seq_len]
@@ -139,7 +142,9 @@ class RevealMAR(MAR):
             pseudo_target=pseudo_target,
         )
         self.latest_planner_aux_loss = planner_aux_loss.detach()
-        return loss + self.planner_loss_weight * planner_aux_loss
+        total_loss = loss + self.planner_loss_weight * planner_aux_loss
+        self.latest_total_loss = total_loss.detach()
+        return total_loss
 
 
 def revealmar_base(**kwargs):
