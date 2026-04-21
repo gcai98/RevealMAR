@@ -125,6 +125,20 @@ class RevealMAR(MAR):
         masked_token_count = int(masked_counts[0].item())
         planner_scores_masked = planner_scores[mask_bool].view(planner_scores.size(0), masked_token_count)
         masked_decoder_tokens = z[mask_bool].view(z.size(0), masked_token_count, z.size(-1))
+        # Project GT latent tokens through the same token->encoder->decoder path to match decoder feature space.
+        gt_encoder_tokens = self.z_proj_ln(self.z_proj(gt_latents))
+        gt_decoder_tokens = self.decoder_embed(gt_encoder_tokens) + self.diffusion_pos_embed_learned
+        masked_gt_decoder_tokens = gt_decoder_tokens[mask_bool].view(z.size(0), masked_token_count, z.size(-1))
+
+        # Build per-token 2D latent-grid coordinates, then index masked coordinates.
+        # seq_h * seq_w == seq_len in MAR; coordinates align with token flatten order.
+        grid_y, grid_x = torch.meshgrid(
+            torch.arange(self.seq_h, device=z.device),
+            torch.arange(self.seq_w, device=z.device),
+            indexing='ij',
+        )
+        all_coords = torch.stack([grid_y.reshape(-1), grid_x.reshape(-1)], dim=-1).to(z.dtype)
+        masked_coords = all_coords.unsqueeze(0).expand(z.size(0), -1, -1)[mask_bool].view(z.size(0), masked_token_count, 2)
         self.latest_planner_scores_masked = planner_scores_masked
 
         candidate_indices = build_candidate_subset(planner_scores_masked, self.candidate_pool_size)
@@ -132,6 +146,8 @@ class RevealMAR(MAR):
             planner_scores_masked,
             candidate_indices,
             masked_decoder_tokens,
+            masked_gt_decoder_tokens,
+            masked_coords,
             pseudo_target_type=self.pseudo_target_type,
         )
         self.latest_candidate_indices = candidate_indices
