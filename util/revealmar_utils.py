@@ -22,17 +22,22 @@ def _scatter_candidate_values(base_tensor, candidate_indices, candidate_values):
 
 
 def _normalize_per_sample(values, eps=1e-6):
+    values = torch.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
     v_min = values.min(dim=1, keepdim=True).values
     v_max = values.max(dim=1, keepdim=True).values
-    return (values - v_min) / (v_max - v_min + eps)
+    normalized = (values - v_min) / (v_max - v_min + eps)
+    return torch.nan_to_num(normalized, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def _local_discrepancy_l2(tokens):
     """Average L2-to-local-mean discrepancy in feature space."""
     if tokens.size(0) <= 1:
         return tokens.new_zeros(())
-    local_mean = tokens.mean(dim=0, keepdim=True)
-    return ((tokens - local_mean) ** 2).sum(dim=-1).mean()
+    tokens_fp32 = torch.nan_to_num(tokens.float(), nan=0.0, posinf=0.0, neginf=0.0)
+    local_mean = tokens_fp32.mean(dim=0, keepdim=True)
+    discrepancy = ((tokens_fp32 - local_mean) ** 2).sum(dim=-1).mean()
+    discrepancy = torch.nan_to_num(discrepancy, nan=0.0, posinf=0.0, neginf=0.0)
+    return discrepancy.to(dtype=tokens.dtype)
 
 
 def build_gt_reveal_target(masked_scores, candidate_indices, masked_decoder_tokens, masked_gt_decoder_tokens, masked_coords):
@@ -79,7 +84,8 @@ def build_gt_reveal_target(masked_scores, candidate_indices, masked_decoder_toke
             local_after_tokens[local_cand_pos[0]] = cur_gt_tokens[cand_idx]
             discrepancy_after = _local_discrepancy_l2(local_after_tokens)
 
-            utilities[b, j] = discrepancy_before - discrepancy_after
+            utility = discrepancy_before - discrepancy_after
+            utilities[b, j] = torch.nan_to_num(utility, nan=0.0, posinf=0.0, neginf=0.0)
 
     utilities = _normalize_per_sample(utilities)
     return _scatter_candidate_values(masked_scores, candidate_indices, utilities)
