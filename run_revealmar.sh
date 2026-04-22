@@ -13,6 +13,9 @@ export SERVER_RESUME_DIR="${SERVER_RESUME_DIR:-<SERVER_MAR_BASE_RESUME_DIR>}"
 export PSEUDO_TARGET_TYPE="${PSEUDO_TARGET_TYPE:-none}"   # none | gt_reveal | pred_reveal | mixed_reveal
 export PLANNER_LOSS_WEIGHT="${PLANNER_LOSS_WEIGHT:-1.0}"
 export CANDIDATE_POOL_SIZE="${CANDIDATE_POOL_SIZE:-8}"
+export SAMPLING_POLICY="${SAMPLING_POLICY:-baseline}"     # baseline | planner
+export CANDIDATE_SELECTION_MODE="${CANDIDATE_SELECTION_MODE:-topk}"  # topk | mixed
+export MIXED_POLICY_RATIO="${MIXED_POLICY_RATIO:-0.0}"
 export MODE="${MODE:-evaluate}"   # evaluate | train_small
 
 # mar_base-compatible diffloss (required when resuming mar_base)
@@ -29,12 +32,14 @@ if [[ "${MODE}" == "evaluate" ]]; then
     --pseudo_target_type "${PSEUDO_TARGET_TYPE}" \
     --planner_loss_weight "${PLANNER_LOSS_WEIGHT}" \
     --candidate_pool_size "${CANDIDATE_POOL_SIZE}" \
+    --sampling_policy "${SAMPLING_POLICY}" \
+    --candidate_selection_mode "${CANDIDATE_SELECTION_MODE}" \
     --num_iter 256 \
     --num_sampling_steps 100 \
     --cfg 2.9 \
     --planner_hidden_dim 128 \
     --budget_mode soft \
-    --mixed_policy_ratio 0.0
+    --mixed_policy_ratio "${MIXED_POLICY_RATIO}"
 elif [[ "${MODE}" == "train_small" ]]; then
   # Small real training smoke: few epochs, small batch, loss decomposition to stdout.
   python main_revealmar.py \
@@ -52,7 +57,7 @@ elif [[ "${MODE}" == "train_small" ]]; then
     --candidate_pool_size "${CANDIDATE_POOL_SIZE}" \
     --planner_hidden_dim 128 \
     --budget_mode soft \
-    --mixed_policy_ratio 0.0 \
+    --mixed_policy_ratio "${MIXED_POLICY_RATIO}" \
     --log_revealmar_losses \
     --log_revealmar_loss_freq 20
 else

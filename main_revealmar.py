@@ -138,11 +138,24 @@ def get_args_parser():
                         help='budget mode for RevealMAR')
     parser.add_argument('--mixed_policy_ratio', default=0.0, type=float,
                         help='mixed policy ratio for RevealMAR')
+    parser.add_argument('--mixed_policy_ratio_schedule', default='constant', type=str,
+                        choices=['constant', 'linear_warmup'],
+                        help='optional schedule for mixed_policy_ratio during training')
+    parser.add_argument('--mixed_policy_ratio_warmup_epochs', default=0, type=int,
+                        help='warmup epochs for mixed_policy_ratio when schedule is linear_warmup')
 
     parser.add_argument('--log_revealmar_losses', action='store_true',
                         help='Print RevealMAR loss decomposition (total, diffloss, planner_aux) during training')
     parser.add_argument('--log_revealmar_loss_freq', type=int, default=20,
                         help='Print every N forward passes when --log_revealmar_losses is set')
+    parser.add_argument('--log_mixed_policy_debug', action='store_true',
+                        help='Print RevealMAR mixed-policy diagnostics during training')
+    parser.add_argument('--log_mixed_policy_freq', type=int, default=20,
+                        help='Print every N forward passes when --log_mixed_policy_debug is set')
+    parser.add_argument('--log_planner_sampling_debug', action='store_true',
+                        help='Print RevealMAR planner-sampling diagnostics during evaluation/sampling')
+    parser.add_argument('--log_planner_sampling_steps', type=int, default=8,
+                        help='Number of early sampling steps to summarize when planner-sampling debug is enabled')
 
     return parser
 
@@ -250,6 +263,13 @@ def main(args):
     model_without_ddp._revealmar_loss_log_freq = (
         int(args.log_revealmar_loss_freq) if args.log_revealmar_losses else 0
     )
+    model_without_ddp._revealmar_mixed_policy_log_freq = (
+        int(args.log_mixed_policy_freq) if args.log_mixed_policy_debug else 0
+    )
+    model_without_ddp._revealmar_sampling_debug = bool(args.log_planner_sampling_debug)
+    model_without_ddp._revealmar_sampling_debug_steps = int(args.log_planner_sampling_steps)
+    model_without_ddp._revealmar_mixed_policy_ratio_schedule = args.mixed_policy_ratio_schedule
+    model_without_ddp._revealmar_mixed_policy_ratio_warmup_epochs = int(args.mixed_policy_ratio_warmup_epochs)
 
     param_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
@@ -295,6 +315,7 @@ def main(args):
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
+        model_without_ddp._revealmar_current_epoch = epoch
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
 

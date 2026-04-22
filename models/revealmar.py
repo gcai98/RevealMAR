@@ -58,6 +58,10 @@ class RevealMAR(MAR):
                     self.candidate_selection_mode, sorted(valid_candidate_selection_modes)
                 )
             )
+        if not 0.0 <= self.mixed_policy_ratio <= 1.0:
+            raise ValueError(
+                "Unsupported mixed_policy_ratio {}. Expected value in [0, 1]".format(self.mixed_policy_ratio)
+            )
 
         # Planner head is intentionally separate from baseline diffusion/value path.
         self.planner_head = nn.Sequential(
@@ -73,6 +77,14 @@ class RevealMAR(MAR):
         self.latest_diffloss = None
         self.latest_planner_aux_loss = None
         self.latest_total_loss = None
+        self.latest_mixed_policy_applied = False
+        self.latest_mixed_policy_swap_count = 0
+        self.latest_mixed_policy_fraction = 0.0
+        self.latest_mixed_policy_mask_delta = 0
+        self.latest_mixed_policy_ratio_effective = 0.0
+        self.latest_sampling_budget_trajectory = None
+        self.latest_sampling_selected_trajectory = None
+        self.latest_sampling_entropy_trajectory = None
 
     def extra_repr(self):
         return (
@@ -85,6 +97,45 @@ class RevealMAR(MAR):
             f"budget_mode={self.budget_mode}, "
             f"mixed_policy_ratio={self.mixed_policy_ratio}"
         )
+
+    def _get_effective_mixed_policy_ratio(self):
+        schedule = getattr(self, '_revealmar_mixed_policy_ratio_schedule', 'constant')
+        warmup_epochs = int(getattr(self, '_revealmar_mixed_policy_ratio_warmup_epochs', 0) or 0)
+        current_epoch = int(getattr(self, '_revealmar_current_epoch', 0) or 0)
+        base_ratio = float(self.mixed_policy_ratio)
+        if schedule == 'constant' or warmup_epochs <= 0:
+            return base_ratio
+        if schedule == 'linear_warmup':
+            progress = min(max((current_epoch + 1) / float(warmup_epochs), 0.0), 1.0)
+            return base_ratio * progress
+        raise ValueError("Unsupported mixed-policy ratio schedule: {}".format(schedule))
+
+    def _maybe_log_mixed_policy_debug(self):
+        log_freq = int(getattr(self, '_revealmar_mixed_policy_log_freq', 0) or 0)
+        if log_freq <= 0:
+            return
+        self._revealmar_mixed_policy_fwd_count = getattr(self, '_revealmar_mixed_policy_fwd_count', 0) + 1
+        if self._revealmar_mixed_policy_fwd_count % log_freq == 0 and misc.is_main_process():
+            print(
+                '[RevealMAR][mixed-policy] fwd={} applied={} ratio_eff={:.4f} swap_count={} perturbed_fraction={:.4f} mask_delta={}'.format(
+                    self._revealmar_mixed_policy_fwd_count,
+                    int(bool(self.latest_mixed_policy_applied)),
+                    float(self.latest_mixed_policy_ratio_effective),
+                    int(self.latest_mixed_policy_swap_count),
+                    float(self.latest_mixed_policy_fraction),
+                    int(self.latest_mixed_policy_mask_delta),
+                )
+            )
+
+    def _planner_score_entropy_summary(self, planner_scores_masked):
+        if planner_scores_masked.numel() == 0:
+            return 0.0
+        probs = torch.softmax(planner_scores_masked.float(), dim=-1)
+        probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+        entropy = -(probs * torch.log(probs.clamp_min(1e-8))).sum(dim=-1)
+        entropy_norm = entropy / math.log(float(max(planner_scores_masked.size(1), 2)))
+        concentration = (1.0 - entropy_norm).clamp(0.0, 1.0)
+        return float(concentration.mean().item())
 
     def _build_masked_coords(self, mask_bool, dtype, device):
         grid_y, grid_x = torch.meshgrid(
@@ -216,6 +267,61 @@ class RevealMAR(MAR):
         pairwise_loss = F.softplus(-(rank_sign * score_diff))[valid_pair_mask].mean()
         return regression_loss + pairwise_loss
 
+    def _apply_mixed_policy_training_mask(self, x, mask, orders, class_embedding):
+        """
+        Mixed-policy exposure for training only.
+
+        Start from the reference random-mask state, then swap a small fraction of tokens:
+        planner-preferred masked tokens become visible, and an equal number of currently
+        visible reference-order frontier tokens are masked again. This preserves the total
+        masked-token count while shifting the observed partial state toward planner influence.
+        """
+        effective_ratio = self._get_effective_mixed_policy_ratio()
+        self.latest_mixed_policy_applied = False
+        self.latest_mixed_policy_swap_count = 0
+        self.latest_mixed_policy_fraction = 0.0
+        self.latest_mixed_policy_mask_delta = 0
+        self.latest_mixed_policy_ratio_effective = effective_ratio
+        if not self.training or effective_ratio <= 0.0:
+            return mask
+
+        mask_bool = mask.bool()
+        masked_counts = mask_bool.sum(dim=1)
+        assert torch.all(masked_counts == masked_counts[0]), "Expected equal masked-token count per sample"
+        masked_token_count = int(masked_counts[0].item())
+        visible_token_count = self.seq_len - masked_token_count
+        if masked_token_count <= 0 or visible_token_count <= 0:
+            return mask
+
+        swap_count = int(round(masked_token_count * effective_ratio))
+        swap_count = min(swap_count, masked_token_count, visible_token_count)
+        if swap_count <= 0:
+            return mask
+
+        with torch.no_grad():
+            x_ref = self.forward_mae_encoder(x, mask, class_embedding)
+            z_ref = self.forward_mae_decoder(x_ref, mask)
+            planner_scores_masked, masked_positions, _ = self._compute_masked_planner_scores(z_ref, mask)
+            reveal_within_masked = torch.topk(
+                planner_scores_masked, k=swap_count, dim=-1, largest=True
+            ).indices
+            reveal_positions = torch.gather(masked_positions, dim=1, index=reveal_within_masked)
+
+        # Re-mask an equal-size slice from the reference visible frontier to keep mask count unchanged.
+        remask_positions = orders[:, masked_token_count:masked_token_count + swap_count]
+        mixed_mask = mask_bool.clone()
+        for b in range(mask.size(0)):
+            mixed_mask[b, reveal_positions[b]] = False
+            mixed_mask[b, remask_positions[b]] = True
+
+        mixed_counts = mixed_mask.sum(dim=1)
+        assert torch.all(mixed_counts == masked_counts), "Mixed-policy mask should preserve masked-token count"
+        self.latest_mixed_policy_applied = True
+        self.latest_mixed_policy_swap_count = swap_count
+        self.latest_mixed_policy_fraction = float(swap_count) / float(max(masked_token_count, 1))
+        self.latest_mixed_policy_mask_delta = int(torch.logical_xor(mask_bool, mixed_mask).sum(dim=1)[0].item())
+        return mixed_mask.to(dtype=mask.dtype)
+
     def forward(self, imgs, labels):
         # class embed
         class_embedding = self.class_emb(labels)
@@ -225,6 +331,7 @@ class RevealMAR(MAR):
         gt_latents = x.clone().detach()
         orders = self.sample_orders(bsz=x.size(0))
         mask = self.random_masking(x, orders)
+        mask = self._apply_mixed_policy_training_mask(x, mask, orders, class_embedding)
 
         # mae encoder + decoder
         x = self.forward_mae_encoder(x, mask, class_embedding)
@@ -284,6 +391,7 @@ class RevealMAR(MAR):
                     )
                 )
 
+        self._maybe_log_mixed_policy_debug()
         return total_loss
 
     @torch.no_grad()
@@ -300,6 +408,11 @@ class RevealMAR(MAR):
         indices = list(range(num_iter))
         if progress:
             indices = tqdm(indices)
+        debug_sampling = bool(getattr(self, '_revealmar_sampling_debug', False))
+        debug_sampling_steps = int(getattr(self, '_revealmar_sampling_debug_steps', 8) or 8)
+        budget_trajectory = []
+        selected_trajectory = []
+        entropy_trajectory = []
 
         for step in indices:
             if not mask.bool().any():
@@ -326,6 +439,7 @@ class RevealMAR(MAR):
             assert torch.all(masked_counts == masked_counts[0]), "Expected equal masked-token count per sample"
             masked_token_count = int(masked_counts[0].item())
             planner_scores_masked, _, _ = self._compute_masked_planner_scores(z_cond, mask)
+            score_concentration = self._planner_score_entropy_summary(planner_scores_masked)
             reveal_count = self._compute_reveal_budget(planner_scores_masked, masked_token_count, step, num_iter)
             if reveal_count <= 0 and masked_token_count > 0:
                 reveal_count = masked_token_count if step >= num_iter - 1 else 1
@@ -337,6 +451,9 @@ class RevealMAR(MAR):
             assert torch.all(mask_to_pred.sum(dim=1) == selected_count), "Expected equal selected-token count per sample"
             if selected_count <= 0:
                 raise RuntimeError("Planner sampling selected no tokens to reveal")
+            budget_trajectory.append(int(reveal_count))
+            selected_trajectory.append(int(selected_count))
+            entropy_trajectory.append(float(score_concentration))
 
             if not cfg == 1.0:
                 mask_to_pred_model = torch.cat([mask_to_pred, mask_to_pred], dim=0)
@@ -361,6 +478,20 @@ class RevealMAR(MAR):
             cur_tokens[mask_to_pred.nonzero(as_tuple=True)] = sampled_token_latent
             tokens = cur_tokens
             mask = mask.masked_fill(mask_to_pred, 0.0)
+
+        self.latest_sampling_budget_trajectory = budget_trajectory
+        self.latest_sampling_selected_trajectory = selected_trajectory
+        self.latest_sampling_entropy_trajectory = entropy_trajectory
+        if debug_sampling and misc.is_main_process():
+            shown_steps = min(debug_sampling_steps, len(budget_trajectory))
+            summary = []
+            for i in range(shown_steps):
+                summary.append(
+                    'step{}:budget={} selected={} concentration={:.4f}'.format(
+                        i, budget_trajectory[i], selected_trajectory[i], entropy_trajectory[i]
+                    )
+                )
+            print('[RevealMAR][planner-sampling] ' + ' | '.join(summary))
 
         if mask.bool().any():
             tokens[mask.bool()] = 0.0
