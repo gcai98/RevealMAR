@@ -127,6 +127,12 @@ def get_args_parser():
     parser.add_argument('--pseudo_target_type', default='none', type=str,
                         choices=['none', 'gt_reveal', 'pred_reveal', 'mixed_reveal'],
                         help='pseudo target variant for RevealMAR scaffolding')
+    parser.add_argument('--sampling_policy', default='baseline', type=str,
+                        choices=['baseline', 'planner'],
+                        help='sampling policy for RevealMAR evaluation/sampling')
+    parser.add_argument('--candidate_selection_mode', default='topk', type=str,
+                        choices=['topk', 'mixed'],
+                        help='candidate subset proposal mode for RevealMAR')
     parser.add_argument('--budget_mode', default='soft', type=str,
                         choices=['soft', 'hard'],
                         help='budget mode for RevealMAR')
@@ -213,6 +219,8 @@ def main(args):
         planner_loss_weight=args.planner_loss_weight,
         candidate_pool_size=args.candidate_pool_size,
         pseudo_target_type=args.pseudo_target_type,
+        sampling_policy=args.sampling_policy,
+        candidate_selection_mode=args.candidate_selection_mode,
         budget_mode=args.budget_mode,
         mixed_policy_ratio=args.mixed_policy_ratio,
     )

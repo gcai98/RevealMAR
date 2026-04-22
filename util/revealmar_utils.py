@@ -1,15 +1,103 @@
 import torch
 
 
-def build_candidate_subset(masked_scores, candidate_pool_size):
-    """Select top-k candidate masked tokens per sample by planner score."""
+def _deterministic_pseudo_random_order(num_items, device, dtype, seed_scalar):
+    base = torch.arange(num_items, device=device, dtype=dtype)
+    noise = torch.frac(torch.sin((base + 1.0) * 12.9898 + seed_scalar * 78.233) * 43758.5453)
+    return torch.argsort(noise, descending=True)
+
+
+def _greedy_spatial_diverse_indices(coords, candidate_count, already_selected_mask):
+    remaining_idx = (~already_selected_mask).nonzero(as_tuple=True)[0]
+    if candidate_count <= 0 or remaining_idx.numel() == 0:
+        return []
+
+    diverse = []
+    if already_selected_mask.any():
+        selected_coords = coords[already_selected_mask]
+        min_dist = torch.cdist(coords[remaining_idx].float(), selected_coords.float()).min(dim=1).values
+        first_idx = remaining_idx[torch.argmax(min_dist)]
+    else:
+        coords_float = coords.float()
+        center = coords_float.mean(dim=0, keepdim=True)
+        dist_to_center = torch.norm(coords_float[remaining_idx] - center, dim=-1)
+        first_idx = remaining_idx[torch.argmax(dist_to_center)]
+
+    diverse.append(int(first_idx.item()))
+    while len(diverse) < candidate_count:
+        already_selected_mask[diverse[-1]] = True
+        remaining_idx = (~already_selected_mask).nonzero(as_tuple=True)[0]
+        if remaining_idx.numel() == 0:
+            break
+        selected_coords = coords[already_selected_mask]
+        min_dist = torch.cdist(coords[remaining_idx].float(), selected_coords.float()).min(dim=1).values
+        next_idx = remaining_idx[torch.argmax(min_dist)]
+        diverse.append(int(next_idx.item()))
+    return diverse
+
+
+def build_candidate_subset(masked_scores, candidate_pool_size, masked_coords=None, selection_mode='topk'):
+    """Select candidate masked tokens per sample by planner score or a mixed proposal."""
     assert masked_scores.dim() == 2, "masked_scores must be [bsz, masked_token_count]"
     bsz, masked_token_count = masked_scores.shape
     if masked_token_count == 0:
         empty = torch.empty(bsz, 0, device=masked_scores.device, dtype=torch.long)
         return empty
+
     k = min(int(candidate_pool_size), masked_token_count)
-    candidate_indices = torch.topk(masked_scores, k=k, dim=-1, largest=True).indices
+    if selection_mode == 'topk' or k <= 1:
+        return torch.topk(masked_scores, k=k, dim=-1, largest=True).indices
+    if selection_mode != 'mixed':
+        raise ValueError("Unsupported selection_mode: {}".format(selection_mode))
+
+    candidate_indices = torch.empty(bsz, k, device=masked_scores.device, dtype=torch.long)
+    topk_count = min(k, max(1, k // 2))
+    random_count = min(k - topk_count, max(0, k // 4))
+    diverse_count = k - topk_count - random_count
+
+    for b in range(bsz):
+        scores = masked_scores[b]
+        selected_mask = torch.zeros(masked_token_count, device=masked_scores.device, dtype=torch.bool)
+        chosen = []
+
+        top_idx = torch.topk(scores, k=topk_count, dim=-1, largest=True).indices.tolist()
+        for idx in top_idx:
+            if not selected_mask[idx]:
+                selected_mask[idx] = True
+                chosen.append(idx)
+
+        if random_count > 0:
+            seed_scalar = torch.nan_to_num(scores.float().mean(), nan=0.0, posinf=0.0, neginf=0.0)
+            random_order = _deterministic_pseudo_random_order(
+                masked_token_count, device=masked_scores.device, dtype=scores.dtype, seed_scalar=seed_scalar
+            )
+            for idx in random_order.tolist():
+                if len(chosen) >= topk_count + random_count:
+                    break
+                if not selected_mask[idx]:
+                    selected_mask[idx] = True
+                    chosen.append(idx)
+
+        if diverse_count > 0 and masked_coords is not None:
+            diverse = _greedy_spatial_diverse_indices(masked_coords[b], diverse_count, selected_mask.clone())
+            for idx in diverse:
+                if len(chosen) >= k:
+                    break
+                if not selected_mask[idx]:
+                    selected_mask[idx] = True
+                    chosen.append(idx)
+
+        if len(chosen) < k:
+            fallback = torch.argsort(scores, descending=True)
+            for idx in fallback.tolist():
+                if len(chosen) >= k:
+                    break
+                if not selected_mask[idx]:
+                    selected_mask[idx] = True
+                    chosen.append(idx)
+
+        candidate_indices[b] = torch.tensor(chosen, device=masked_scores.device, dtype=torch.long)
+
     return candidate_indices
 
 
