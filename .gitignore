@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .pyc_tmp/
 .pycache_prefix/
+.pycache_check_new/
 .DS_Store
 Thumbs.db
 output_dir/
