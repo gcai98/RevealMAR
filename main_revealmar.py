@@ -157,6 +157,13 @@ def get_args_parser():
     parser.add_argument('--log_planner_sampling_steps', type=int, default=8,
                         help='Number of early sampling steps to summarize when planner-sampling debug is enabled')
 
+    # 添加GPU内存日志参数
+    parser.add_argument('--log_gpu_mem', action='store_true',
+                        help='Log CUDA memory peak for renting GPU decision')
+
+    parser.add_argument('--log_gpu_mem_freq', default=50, type=int,
+                        help='Log CUDA memory every N iterations/steps')
+
     return parser
 
 
@@ -277,7 +284,7 @@ def main(args):
     loss_scaler = NativeScaler()
 
     if args.resume and os.path.exists(os.path.join(args.resume, 'checkpoint-last.pth')):
-        checkpoint = torch.load(os.path.join(args.resume, 'checkpoint-last.pth'), map_location='cpu')
+        checkpoint = torch.load(os.path.join(args.resume, 'checkpoint-last.pth'), map_location='cpu', weights_only=False)
         load_result = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         if load_result.missing_keys:
             print('Resume missing model keys (likely new RevealMAR params): {}'.format(load_result.missing_keys))

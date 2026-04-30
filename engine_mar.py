@@ -28,6 +28,30 @@ def update_ema(target_params, source_params, rate=0.99):
     for targ, src in zip(target_params, source_params):
         targ.detach().mul_(rate).add_(src, alpha=1 - rate)
 
+def _gb(x):
+    return x / 1024 ** 3
+
+
+def log_cuda_memory(tag):
+    if not torch.cuda.is_available():
+        return
+
+    torch.cuda.synchronize()
+    device = torch.cuda.current_device()
+
+    allocated = torch.cuda.memory_allocated(device)
+    reserved = torch.cuda.memory_reserved(device)
+    peak_allocated = torch.cuda.max_memory_allocated(device)
+    peak_reserved = torch.cuda.max_memory_reserved(device)
+
+    print(
+        f"[GPU Memory][{tag}] "
+        f"allocated={_gb(allocated):.2f}GB, "
+        f"reserved={_gb(reserved):.2f}GB, "
+        f"peak_allocated={_gb(peak_allocated):.2f}GB, "
+        f"peak_reserved={_gb(peak_reserved):.2f}GB",
+        flush=True
+    )
 
 def train_one_epoch(model, vae,
                     model_params, ema_params,
@@ -36,6 +60,11 @@ def train_one_epoch(model, vae,
                     log_writer=None,
                     args=None):
     model.train(True)
+    # log GPU memory at the start of each epoch if enabled
+    if getattr(args, "log_gpu_mem", False) and torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+        log_cuda_memory(f"train epoch {epoch} start")
+
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
@@ -79,6 +108,13 @@ def train_one_epoch(model, vae,
 
         torch.cuda.synchronize()
 
+        if (
+            getattr(args, "log_gpu_mem", False)
+            and getattr(args, "log_gpu_mem_freq", 0) > 0
+            and data_iter_step % args.log_gpu_mem_freq == 0
+        ):
+            log_cuda_memory(f"train epoch {epoch} iter {data_iter_step}")
+
         update_ema(ema_params, model_params, rate=args.ema_rate)
 
         metric_logger.update(loss=loss_value)
@@ -97,6 +133,10 @@ def train_one_epoch(model, vae,
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
+
+    if getattr(args, "log_gpu_mem", False) and torch.cuda.is_available():
+        log_cuda_memory(f"train epoch {epoch} end")
+
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
@@ -104,6 +144,11 @@ def train_one_epoch(model, vae,
 def evaluate(model_without_ddp, vae, ema_params, args, epoch, batch_size=16, log_writer=None, cfg=1.0,
              use_ema=True):
     model_without_ddp.eval()
+
+    if getattr(args, "log_gpu_mem", False) and torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+        log_cuda_memory("eval start")
+
     num_steps = args.num_images // (batch_size * misc.get_world_size()) + 1
     save_folder = os.path.join(args.output_dir, "ariter{}-diffsteps{}-temp{}-{}cfg{}-image{}".format(args.num_iter,
                                                                                                      args.num_sampling_steps,
@@ -158,6 +203,14 @@ def evaluate(model_without_ddp, vae, ema_params, args, epoch, batch_size=16, log
                                                                  temperature=args.temperature)
                 sampled_images = vae.decode(sampled_tokens / 0.2325)
 
+                if (
+                    getattr(args, "log_gpu_mem", False)
+                    and getattr(args, "log_gpu_mem_freq", 0) > 0
+                    and i % args.log_gpu_mem_freq == 0
+                ):
+                    log_cuda_memory(f"eval step {i}")
+
+
         # measure speed after the first generation batch
         if i >= 1:
             torch.cuda.synchronize()
@@ -187,6 +240,10 @@ def evaluate(model_without_ddp, vae, ema_params, args, epoch, batch_size=16, log
     if use_ema:
         print("Switch back from ema")
         model_without_ddp.load_state_dict(model_state_dict)
+
+    if getattr(args, "log_gpu_mem", False) and torch.cuda.is_available():
+        log_cuda_memory("eval generation end")
+
 
     # compute FID and IS
     if log_writer is not None:
@@ -218,6 +275,8 @@ def evaluate(model_without_ddp, vae, ema_params, args, epoch, batch_size=16, log
         print("FID: {:.4f}, Inception Score: {:.4f}".format(fid, inception_score))
         # remove temporal saving folder
         shutil.rmtree(save_folder)
+
+       
 
     if torch.distributed.is_initialized():
         torch.distributed.barrier()
