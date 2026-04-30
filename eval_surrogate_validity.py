@@ -313,11 +313,7 @@ def rollout_proxy_gains(
     gains = torch.empty(bsz, k, device=mask.device, dtype=torch.float32)
 
     for b in range(bsz):
-        tok_rep = tokens[b : b + 1].repeat(k, 1, 1)
-        lab_rep = labels[b : b + 1].repeat(k)
-        order_rep = orders[b : b + 1].repeat(k, 1)
         cand = candidate_positions[b]
-
         default_mask_rep = default_final_mask[b : b + 1].repeat(k, 1)
         default_state_rep = {
             "z": default_state["z"][b : b + 1].repeat(k, 1, 1),
@@ -326,12 +322,28 @@ def rollout_proxy_gains(
         eval_mask = default_mask_rep.clone()
         l_default = local_loss_from_state(default_state_rep, eval_mask, cand, coords, args.local_radius)
 
-        reveal_mask = mask_from_orders(order_rep, final_mask_len)
-        false_src = torch.zeros(k, 1, device=mask.device, dtype=torch.bool)
-        reveal_mask.scatter_(1, cand.unsqueeze(1), false_src)
-        reveal_state = decode_state(model, tok_rep, lab_rep, reveal_mask)
-        l_reveal = local_loss_from_state(reveal_state, eval_mask, cand, coords, args.local_radius)
-        gains[b] = l_default - l_reveal
+        tok_one = tokens[b : b + 1]
+        lab_one = labels[b : b + 1]
+        order_one = orders[b : b + 1]
+        false_src = torch.zeros(1, 1, device=mask.device, dtype=torch.bool)
+
+        for j in range(k):
+            cand_one = candidate_positions[b, j : j + 1]
+            reveal_mask_one = mask_from_orders(order_one, final_mask_len)
+            reveal_mask_one.scatter_(1, cand_one.unsqueeze(1), false_src)
+
+            # MAR's encoder reshapes visible tokens assuming equal visible counts
+            # inside a batch. Reveal-first branches can differ because a candidate
+            # may already be visible under pi_ref, so decode each branch alone.
+            reveal_state = decode_state(model, tok_one, lab_one, reveal_mask_one)
+            reveal_loss = local_loss_from_state(
+                reveal_state,
+                eval_mask[j : j + 1],
+                cand_one,
+                coords,
+                args.local_radius,
+            )[0]
+            gains[b, j] = l_default[j] - reveal_loss
     return gains
 
 
