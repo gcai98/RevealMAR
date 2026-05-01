@@ -190,6 +190,79 @@ class RevealMAR(MAR):
             'uncertainty_max': float(uncertainty.max().item()),
         }
 
+    def _mean_min_max(self, values):
+        if not values:
+            return 0.0, 0.0, 0.0
+        values = [float(v) for v in values]
+        return sum(values) / len(values), min(values), max(values)
+
+    def _mean_from_dict_trajectory(self, dict_list, key):
+        values = [float(item[key]) for item in dict_list if item is not None and key in item]
+        return sum(values) / len(values) if values else 0.0
+
+    def _mean_min_max_from_dict_trajectory(self, dict_list, key):
+        values = [float(item[key]) for item in dict_list if item is not None and key in item]
+        return self._mean_min_max(values)
+
+    def _format_sampling_summary(
+        self,
+        budget_trajectory,
+        selected_trajectory,
+        entropy_trajectory,
+        score_stats_trajectory,
+        uncertainty_stats_trajectory,
+    ):
+        budget_mean, budget_min, budget_max = self._mean_min_max(budget_trajectory)
+        selected_mean, selected_min, selected_max = self._mean_min_max(selected_trajectory)
+        conc_mean, conc_min, conc_max = self._mean_min_max(entropy_trajectory)
+        score_std_mean, score_std_min, score_std_max = self._mean_min_max_from_dict_trajectory(
+            score_stats_trajectory, 'score_std'
+        )
+
+        item = (
+            '[RevealMAR][sampling-summary] '
+            'policy={},budget_mode={},steps={},'
+            'budget_mean={:.6f},budget_min={:.6f},budget_max={:.6f},'
+            'selected_mean={:.6f},selected_min={:.6f},selected_max={:.6f},'
+            'conc_mean={:.6f},conc_min={:.6f},conc_max={:.6f},'
+            'score_mean_mean={:.6f},score_std_mean={:.6f},score_std_min={:.6f},score_std_max={:.6f},'
+            'score_min_mean={:.6f},score_max_mean={:.6f},top1_mean={:.6f},topk_mean={:.6f}'.format(
+                self.sampling_policy,
+                self.budget_mode,
+                len(budget_trajectory),
+                budget_mean,
+                budget_min,
+                budget_max,
+                selected_mean,
+                selected_min,
+                selected_max,
+                conc_mean,
+                conc_min,
+                conc_max,
+                self._mean_from_dict_trajectory(score_stats_trajectory, 'score_mean'),
+                score_std_mean,
+                score_std_min,
+                score_std_max,
+                self._mean_from_dict_trajectory(score_stats_trajectory, 'score_min'),
+                self._mean_from_dict_trajectory(score_stats_trajectory, 'score_max'),
+                self._mean_from_dict_trajectory(score_stats_trajectory, 'top1_score_mean'),
+                self._mean_from_dict_trajectory(score_stats_trajectory, 'topk_score_mean'),
+            )
+        )
+
+        uncertainty_items = [stats for stats in uncertainty_stats_trajectory if stats is not None]
+        if uncertainty_items:
+            item += (
+                ',uncertainty_mean={:.6f},uncertainty_std_mean={:.6f},'
+                'uncertainty_min_mean={:.6f},uncertainty_max_mean={:.6f}'.format(
+                    self._mean_from_dict_trajectory(uncertainty_items, 'uncertainty_mean'),
+                    self._mean_from_dict_trajectory(uncertainty_items, 'uncertainty_std'),
+                    self._mean_from_dict_trajectory(uncertainty_items, 'uncertainty_min'),
+                    self._mean_from_dict_trajectory(uncertainty_items, 'uncertainty_max'),
+                )
+            )
+        return item
+
     def _build_masked_coords(self, mask_bool, dtype, device):
         grid_y, grid_x = torch.meshgrid(
             torch.arange(self.seq_h, device=device),
@@ -644,6 +717,15 @@ class RevealMAR(MAR):
                     )
                 summary.append(item)
             print('[RevealMAR][planner-sampling] ' + ' | '.join(summary))
+            print(
+                self._format_sampling_summary(
+                    budget_trajectory,
+                    selected_trajectory,
+                    entropy_trajectory,
+                    score_stats_trajectory,
+                    uncertainty_stats_trajectory,
+                )
+            )
 
         if mask.bool().any():
             tokens[mask.bool()] = 0.0

@@ -9,6 +9,31 @@ from statistics import mean
 
 DEFAULT_ROOT = r"C:\caogang\RevealMAR\RevealMAR\p0_runs\main_results_trained_ckpt_full_policies"
 
+SUMMARY_COLUMNS = [
+    "summary_steps",
+    "summary_budget_mean",
+    "summary_budget_min",
+    "summary_budget_max",
+    "summary_selected_mean",
+    "summary_selected_min",
+    "summary_selected_max",
+    "summary_conc_mean",
+    "summary_conc_min",
+    "summary_conc_max",
+    "summary_score_mean_mean",
+    "summary_score_std_mean",
+    "summary_score_std_min",
+    "summary_score_std_max",
+    "summary_score_min_mean",
+    "summary_score_max_mean",
+    "summary_top1_mean",
+    "summary_topk_mean",
+    "summary_uncertainty_mean",
+    "summary_uncertainty_std_mean",
+    "summary_uncertainty_min_mean",
+    "summary_uncertainty_max_mean",
+]
+
 COLUMNS = [
     "variant",
     "method",
@@ -43,6 +68,7 @@ COLUMNS = [
     "avg_score_max",
     "avg_top1_score_mean",
     "avg_topk_score_mean",
+    *SUMMARY_COLUMNS,
     "status",
     "run_dir",
 ]
@@ -169,6 +195,16 @@ def average_or_empty(values):
     return mean(values) if values else ""
 
 
+def aggregate_summary_values(key, values):
+    if not values:
+        return ""
+    if key.endswith("_min"):
+        return min(values)
+    if key.endswith("_max"):
+        return max(values)
+    return mean(values)
+
+
 def parse_debug_stats(text):
     debug_lines = [line for line in text.splitlines() if "[RevealMAR][planner-sampling]" in line]
     buckets = {
@@ -198,6 +234,46 @@ def parse_debug_stats(text):
         "avg_score_max": average_or_empty(buckets["score_max"]),
         "avg_top1_score_mean": average_or_empty(buckets["top1_score_mean"]),
         "avg_topk_score_mean": average_or_empty(buckets["topk_score_mean"]),
+    }
+
+
+def parse_sampling_summary(text):
+    key_map = {
+        "steps": "summary_steps",
+        "budget_mean": "summary_budget_mean",
+        "budget_min": "summary_budget_min",
+        "budget_max": "summary_budget_max",
+        "selected_mean": "summary_selected_mean",
+        "selected_min": "summary_selected_min",
+        "selected_max": "summary_selected_max",
+        "conc_mean": "summary_conc_mean",
+        "conc_min": "summary_conc_min",
+        "conc_max": "summary_conc_max",
+        "score_mean_mean": "summary_score_mean_mean",
+        "score_std_mean": "summary_score_std_mean",
+        "score_std_min": "summary_score_std_min",
+        "score_std_max": "summary_score_std_max",
+        "score_min_mean": "summary_score_min_mean",
+        "score_max_mean": "summary_score_max_mean",
+        "top1_mean": "summary_top1_mean",
+        "topk_mean": "summary_topk_mean",
+        "uncertainty_mean": "summary_uncertainty_mean",
+        "uncertainty_std_mean": "summary_uncertainty_std_mean",
+        "uncertainty_min_mean": "summary_uncertainty_min_mean",
+        "uncertainty_max_mean": "summary_uncertainty_max_mean",
+    }
+    buckets = {column: [] for column in SUMMARY_COLUMNS}
+    for line in text.splitlines():
+        if "[RevealMAR][sampling-summary]" not in line:
+            continue
+        for key, value in re.findall(r"([A-Za-z0-9_]+)=([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)", line):
+            column = key_map.get(key)
+            if column:
+                buckets[column].append(float(value))
+
+    return {
+        column: aggregate_summary_values(column, values)
+        for column, values in buckets.items()
     }
 
 
@@ -244,6 +320,7 @@ def build_row(run_dir):
     has_planner_head = "planner_head" in log_text
     planner_head_missing = has_planner_head and (has_resume_missing or has_ema_missing)
     debug_stats = parse_debug_stats(log_text)
+    summary_stats = parse_sampling_summary(log_text)
 
     row = {
         "variant": first_nonempty(config.get("variant"), run_dir.name),
@@ -272,6 +349,7 @@ def build_row(run_dir):
         "run_dir": str(run_dir),
     }
     row.update(debug_stats)
+    row.update(summary_stats)
     row["status"] = status_for(log_text, fid, planner_head_missing)
     return row
 
@@ -319,6 +397,10 @@ def print_markdown_table(rows):
         "avg_budget",
         "avg_conc",
         "avg_score_std",
+        "summary_budget_mean",
+        "summary_budget_max",
+        "summary_conc_mean",
+        "summary_score_std_mean",
     ]
     print("| " + " | ".join(headers) + " |")
     print("| " + " | ".join(["---"] * len(headers)) + " |")
@@ -335,6 +417,10 @@ def print_markdown_table(rows):
             fmt(row.get("avg_budget")),
             fmt(row.get("avg_concentration")),
             fmt(row.get("avg_score_std")),
+            fmt(row.get("summary_budget_mean")),
+            fmt(row.get("summary_budget_max")),
+            fmt(row.get("summary_conc_mean")),
+            fmt(row.get("summary_score_std_mean")),
         ]
         print("| " + " | ".join(values) + " |")
 
