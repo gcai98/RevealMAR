@@ -21,6 +21,8 @@ class RevealMAR(MAR):
         candidate_pool_size=8,
         pseudo_target_type='none',
         sampling_policy='baseline',
+        uncertainty_mc_samples=2,
+        uncertainty_policy_temperature=1.0,
         candidate_selection_mode='topk',
         budget_mode='soft',
         mixed_policy_ratio=0.0,
@@ -31,6 +33,8 @@ class RevealMAR(MAR):
         self.candidate_pool_size = candidate_pool_size
         self.pseudo_target_type = pseudo_target_type
         self.sampling_policy = sampling_policy
+        self.uncertainty_mc_samples = uncertainty_mc_samples
+        self.uncertainty_policy_temperature = uncertainty_policy_temperature
         self.candidate_selection_mode = candidate_selection_mode
         self.budget_mode = budget_mode
         self.mixed_policy_ratio = mixed_policy_ratio
@@ -38,7 +42,7 @@ class RevealMAR(MAR):
         super().__init__(**kwargs)
 
         valid_pseudo_target_types = {'none', 'gt_reveal', 'pred_reveal', 'mixed_reveal'}
-        valid_sampling_policies = {'baseline', 'planner'}
+        valid_sampling_policies = {'baseline', 'planner', 'random', 'confidence', 'entropy'}
         valid_candidate_selection_modes = {'topk', 'mixed'}
         if self.pseudo_target_type not in valid_pseudo_target_types:
             raise ValueError(
@@ -61,6 +65,10 @@ class RevealMAR(MAR):
         if not 0.0 <= self.mixed_policy_ratio <= 1.0:
             raise ValueError(
                 "Unsupported mixed_policy_ratio {}. Expected value in [0, 1]".format(self.mixed_policy_ratio)
+            )
+        if int(self.uncertainty_mc_samples) < 1:
+            raise ValueError(
+                "Unsupported uncertainty_mc_samples {}. Expected value >= 1".format(self.uncertainty_mc_samples)
             )
 
         # Planner head is intentionally separate from baseline diffusion/value path.
@@ -85,6 +93,8 @@ class RevealMAR(MAR):
         self.latest_sampling_budget_trajectory = None
         self.latest_sampling_selected_trajectory = None
         self.latest_sampling_entropy_trajectory = None
+        self.latest_sampling_score_stats_trajectory = None
+        self.latest_sampling_uncertainty_stats_trajectory = None
 
     def extra_repr(self):
         return (
@@ -93,6 +103,8 @@ class RevealMAR(MAR):
             f"candidate_pool_size={self.candidate_pool_size}, "
             f"pseudo_target_type={self.pseudo_target_type}, "
             f"sampling_policy={self.sampling_policy}, "
+            f"uncertainty_mc_samples={self.uncertainty_mc_samples}, "
+            f"uncertainty_policy_temperature={self.uncertainty_policy_temperature}, "
             f"candidate_selection_mode={self.candidate_selection_mode}, "
             f"budget_mode={self.budget_mode}, "
             f"mixed_policy_ratio={self.mixed_policy_ratio}"
@@ -137,6 +149,47 @@ class RevealMAR(MAR):
         concentration = (1.0 - entropy_norm).clamp(0.0, 1.0)
         return float(concentration.mean().item())
 
+    def _planner_score_debug_summary(self, planner_scores_masked, topk_count):
+        if planner_scores_masked.numel() == 0 or planner_scores_masked.size(1) == 0:
+            return {
+                'score_mean': 0.0,
+                'score_std': 0.0,
+                'score_min': 0.0,
+                'score_max': 0.0,
+                'top1_score_mean': 0.0,
+                'topk_score_mean': 0.0,
+            }
+
+        scores = torch.nan_to_num(planner_scores_masked.float(), nan=0.0, posinf=0.0, neginf=0.0)
+        top1_values = torch.topk(scores, k=1, dim=-1, largest=True).values
+        k = min(max(int(topk_count), 0), scores.size(1))
+        if k > 0:
+            topk_values = torch.topk(scores, k=k, dim=-1, largest=True).values
+            topk_score_mean = float(topk_values.mean().item())
+        else:
+            topk_score_mean = 0.0
+
+        return {
+            'score_mean': float(scores.mean().item()),
+            'score_std': float(scores.std(unbiased=False).item()),
+            'score_min': float(scores.min().item()),
+            'score_max': float(scores.max().item()),
+            'top1_score_mean': float(top1_values.mean().item()),
+            'topk_score_mean': topk_score_mean,
+        }
+
+    def _uncertainty_debug_summary(self, uncertainty_scores_masked):
+        if uncertainty_scores_masked is None or uncertainty_scores_masked.numel() == 0:
+            return None
+
+        uncertainty = torch.nan_to_num(uncertainty_scores_masked.float(), nan=0.0, posinf=0.0, neginf=0.0)
+        return {
+            'uncertainty_mean': float(uncertainty.mean().item()),
+            'uncertainty_std': float(uncertainty.std(unbiased=False).item()),
+            'uncertainty_min': float(uncertainty.min().item()),
+            'uncertainty_max': float(uncertainty.max().item()),
+        }
+
     def _build_masked_coords(self, mask_bool, dtype, device):
         grid_y, grid_x = torch.meshgrid(
             torch.arange(self.seq_h, device=device),
@@ -161,6 +214,44 @@ class RevealMAR(MAR):
         masked_positions = mask_bool.nonzero(as_tuple=True)[1].view(planner_scores.size(0), masked_token_count)
         masked_coords = self._build_masked_coords(mask_bool, dtype=z.dtype, device=z.device)
         return planner_scores_masked, masked_positions, masked_coords
+
+    def _compute_random_masked_scores(self, mask):
+        mask_bool = mask.bool()
+        masked_counts = mask_bool.sum(dim=1)
+        assert torch.all(masked_counts == masked_counts[0]), "Expected equal masked-token count per sample"
+        masked_token_count = int(masked_counts[0].item())
+        random_scores_masked = torch.rand(mask.size(0), masked_token_count, device=mask.device, dtype=torch.float32)
+        masked_positions = mask_bool.nonzero(as_tuple=True)[1].view(mask.size(0), masked_token_count)
+        masked_coords = self._build_masked_coords(mask_bool, dtype=mask.dtype, device=mask.device)
+        return random_scores_masked, masked_positions, masked_coords
+
+    def _compute_uncertainty_masked_scores(self, z, mask, mc_samples=None, temperature=None):
+        mask_bool = mask.bool()
+        masked_counts = mask_bool.sum(dim=1)
+        assert torch.all(masked_counts == masked_counts[0]), "Expected equal masked-token count per sample"
+        masked_token_count = int(masked_counts[0].item())
+        masked_positions = mask_bool.nonzero(as_tuple=True)[1].view(mask.size(0), masked_token_count)
+        masked_coords = self._build_masked_coords(mask_bool, dtype=z.dtype, device=z.device)
+        if masked_token_count <= 0:
+            empty = torch.empty(mask.size(0), 0, device=z.device, dtype=torch.float32)
+            return empty, masked_positions, masked_coords
+
+        mc = max(1, int(self.uncertainty_mc_samples if mc_samples is None else mc_samples))
+        sample_temperature = float(
+            self.uncertainty_policy_temperature if temperature is None else temperature
+        )
+        z_masked = z[mask_bool].view(mask.size(0), masked_token_count, z.size(-1)).detach()
+        z_repeated = z_masked.reshape(-1, z_masked.size(-1)).repeat(mc, 1)
+
+        with torch.no_grad():
+            sampled = self.diffloss.sample(z_repeated, sample_temperature, cfg=1.0)
+            sampled = sampled.detach().view(mc, mask.size(0), masked_token_count, -1).float()
+            uncertainty_scores_masked = sampled.var(dim=0, unbiased=False).mean(dim=-1)
+            uncertainty_scores_masked = torch.nan_to_num(
+                uncertainty_scores_masked, nan=0.0, posinf=0.0, neginf=0.0
+            )
+
+        return uncertainty_scores_masked, masked_positions, masked_coords
 
     def _compute_scheduled_reveal_count(self, masked_token_count, step, num_iter):
         if masked_token_count <= 0:
@@ -192,27 +283,26 @@ class RevealMAR(MAR):
         scaled_reveal = int(round(hard_reveal_count * (0.5 + 0.5 * concentration)))
         return max(1, min(masked_token_count - 1, scaled_reveal))
 
-    def _select_planner_reveal_mask(self, z, mask, reveal_count):
+    def _select_reveal_mask_from_scores(self, mask, reveal_count, masked_scores, masked_positions, masked_coords):
         bsz = mask.size(0)
         mask_bool = mask.bool()
         if reveal_count <= 0 or not mask_bool.any():
             return torch.zeros_like(mask_bool)
 
-        planner_scores_masked, masked_positions, masked_coords = self._compute_masked_planner_scores(z, mask)
-        masked_token_count = planner_scores_masked.size(1)
+        masked_token_count = masked_scores.size(1)
         reveal_count = min(int(reveal_count), masked_token_count)
         if reveal_count == masked_token_count:
             return mask_bool.clone()
 
         candidate_pool_size = max(self.candidate_pool_size, reveal_count)
         candidate_indices = build_candidate_subset(
-            planner_scores_masked,
+            masked_scores,
             candidate_pool_size,
             masked_coords=masked_coords,
             selection_mode=self.candidate_selection_mode,
         )
 
-        candidate_scores = torch.gather(planner_scores_masked, dim=1, index=candidate_indices)
+        candidate_scores = torch.gather(masked_scores, dim=1, index=candidate_indices)
         selected_within_candidate = torch.topk(candidate_scores, k=reveal_count, dim=-1, largest=True).indices
         selected_masked_indices = torch.gather(candidate_indices, dim=1, index=selected_within_candidate)
         selected_full_positions = torch.gather(masked_positions, dim=1, index=selected_masked_indices)
@@ -220,6 +310,12 @@ class RevealMAR(MAR):
         mask_to_pred = torch.zeros(bsz, self.seq_len, device=mask.device, dtype=torch.bool)
         mask_to_pred.scatter_(dim=1, index=selected_full_positions, src=torch.ones_like(selected_full_positions, dtype=torch.bool))
         return mask_to_pred
+
+    def _select_planner_reveal_mask(self, z, mask, reveal_count):
+        planner_scores_masked, masked_positions, masked_coords = self._compute_masked_planner_scores(z, mask)
+        return self._select_reveal_mask_from_scores(
+            mask, reveal_count, planner_scores_masked, masked_positions, masked_coords
+        )
 
     def _fallback_reveal_mask(self, mask, reveal_all=False):
         mask_bool = mask.bool()
@@ -401,6 +497,11 @@ class RevealMAR(MAR):
                 bsz, num_iter=num_iter, cfg=cfg, cfg_schedule=cfg_schedule,
                 labels=labels, temperature=temperature, progress=progress
             )
+        if self.sampling_policy in ('confidence', 'entropy') and cfg != 1.0:
+            raise NotImplementedError(
+                "confidence/entropy sampling policies do not support cfg != 1.0 yet; "
+                "use --cfg 1.0 or sampling_policy baseline/planner/random"
+            )
 
         mask = torch.ones(bsz, self.seq_len, device=self.mask_token.device)
         tokens = torch.zeros(bsz, self.seq_len, self.token_embed_dim, device=self.mask_token.device)
@@ -413,6 +514,8 @@ class RevealMAR(MAR):
         budget_trajectory = []
         selected_trajectory = []
         entropy_trajectory = []
+        score_stats_trajectory = []
+        uncertainty_stats_trajectory = []
 
         for step in indices:
             if not mask.bool().any():
@@ -438,12 +541,38 @@ class RevealMAR(MAR):
             masked_counts = mask.sum(dim=1)
             assert torch.all(masked_counts == masked_counts[0]), "Expected equal masked-token count per sample"
             masked_token_count = int(masked_counts[0].item())
-            planner_scores_masked, _, _ = self._compute_masked_planner_scores(z_cond, mask)
-            score_concentration = self._planner_score_entropy_summary(planner_scores_masked)
-            reveal_count = self._compute_reveal_budget(planner_scores_masked, masked_token_count, step, num_iter)
+            if self.sampling_policy == 'planner':
+                sampling_scores_masked, masked_positions, masked_coords = self._compute_masked_planner_scores(z_cond, mask)
+                uncertainty_scores_masked = None
+            elif self.sampling_policy == 'random':
+                sampling_scores_masked, masked_positions, masked_coords = self._compute_random_masked_scores(mask)
+                uncertainty_scores_masked = None
+            elif self.sampling_policy in ('confidence', 'entropy'):
+                uncertainty_scores_masked, masked_positions, masked_coords = self._compute_uncertainty_masked_scores(
+                    z_cond,
+                    mask,
+                    mc_samples=self.uncertainty_mc_samples,
+                    temperature=self.uncertainty_policy_temperature,
+                )
+                if self.sampling_policy == 'entropy':
+                    sampling_scores_masked = uncertainty_scores_masked
+                else:
+                    sampling_scores_masked = -uncertainty_scores_masked
+            else:
+                raise ValueError("Unsupported sampling_policy during sampling: {}".format(self.sampling_policy))
+
+            score_concentration = self._planner_score_entropy_summary(sampling_scores_masked)
+            score_stats = self._planner_score_debug_summary(sampling_scores_masked, self.candidate_pool_size)
+            uncertainty_stats = self._uncertainty_debug_summary(uncertainty_scores_masked)
+            reveal_count = self._compute_reveal_budget(sampling_scores_masked, masked_token_count, step, num_iter)
             if reveal_count <= 0 and masked_token_count > 0:
                 reveal_count = masked_token_count if step >= num_iter - 1 else 1
-            mask_to_pred = self._select_planner_reveal_mask(z_cond, mask, reveal_count)
+            if self.sampling_policy == 'planner':
+                mask_to_pred = self._select_planner_reveal_mask(z_cond, mask, reveal_count)
+            else:
+                mask_to_pred = self._select_reveal_mask_from_scores(
+                    mask, reveal_count, sampling_scores_masked, masked_positions, masked_coords
+                )
             if not mask_to_pred.any() and masked_token_count > 0:
                 mask_to_pred = self._fallback_reveal_mask(mask, reveal_all=(step >= num_iter - 1))
 
@@ -454,6 +583,8 @@ class RevealMAR(MAR):
             budget_trajectory.append(int(reveal_count))
             selected_trajectory.append(int(selected_count))
             entropy_trajectory.append(float(score_concentration))
+            score_stats_trajectory.append(score_stats)
+            uncertainty_stats_trajectory.append(uncertainty_stats)
 
             if not cfg == 1.0:
                 mask_to_pred_model = torch.cat([mask_to_pred, mask_to_pred], dim=0)
@@ -482,15 +613,36 @@ class RevealMAR(MAR):
         self.latest_sampling_budget_trajectory = budget_trajectory
         self.latest_sampling_selected_trajectory = selected_trajectory
         self.latest_sampling_entropy_trajectory = entropy_trajectory
+        self.latest_sampling_score_stats_trajectory = score_stats_trajectory
+        self.latest_sampling_uncertainty_stats_trajectory = uncertainty_stats_trajectory
         if debug_sampling and misc.is_main_process():
             shown_steps = min(debug_sampling_steps, len(budget_trajectory))
             summary = []
             for i in range(shown_steps):
-                summary.append(
-                    'step{}:budget={} selected={} concentration={:.4f}'.format(
-                        i, budget_trajectory[i], selected_trajectory[i], entropy_trajectory[i]
+                stats = score_stats_trajectory[i]
+                item = (
+                    'step{}:budget={},selected={},conc={:.4f},mean={:.4f},std={:.4f},min={:.4f},max={:.4f},top1={:.4f},topk={:.4f}'.format(
+                        i,
+                        budget_trajectory[i],
+                        selected_trajectory[i],
+                        entropy_trajectory[i],
+                        stats['score_mean'],
+                        stats['score_std'],
+                        stats['score_min'],
+                        stats['score_max'],
+                        stats['top1_score_mean'],
+                        stats['topk_score_mean'],
                     )
                 )
+                uncertainty_stats = uncertainty_stats_trajectory[i]
+                if uncertainty_stats is not None:
+                    item += ',umean={:.4f},ustd={:.4f},umin={:.4f},umax={:.4f}'.format(
+                        uncertainty_stats['uncertainty_mean'],
+                        uncertainty_stats['uncertainty_std'],
+                        uncertainty_stats['uncertainty_min'],
+                        uncertainty_stats['uncertainty_max'],
+                    )
+                summary.append(item)
             print('[RevealMAR][planner-sampling] ' + ' | '.join(summary))
 
         if mask.bool().any():

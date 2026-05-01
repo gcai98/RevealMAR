@@ -128,8 +128,12 @@ def get_args_parser():
                         choices=['none', 'gt_reveal', 'pred_reveal', 'mixed_reveal'],
                         help='pseudo target variant for RevealMAR scaffolding')
     parser.add_argument('--sampling_policy', default='baseline', type=str,
-                        choices=['baseline', 'planner'],
+                        choices=['baseline', 'planner', 'random', 'confidence', 'entropy'],
                         help='sampling policy for RevealMAR evaluation/sampling')
+    parser.add_argument('--uncertainty_mc_samples', default=2, type=int,
+                        help='MC diffusion samples for confidence/entropy uncertainty policies')
+    parser.add_argument('--uncertainty_policy_temperature', default=1.0, type=float,
+                        help='diffusion sampling temperature for confidence/entropy uncertainty policies')
     parser.add_argument('--candidate_selection_mode', default='topk', type=str,
                         choices=['topk', 'mixed'],
                         help='candidate subset proposal mode for RevealMAR')
@@ -240,6 +244,8 @@ def main(args):
         candidate_pool_size=args.candidate_pool_size,
         pseudo_target_type=args.pseudo_target_type,
         sampling_policy=args.sampling_policy,
+        uncertainty_mc_samples=args.uncertainty_mc_samples,
+        uncertainty_policy_temperature=args.uncertainty_policy_temperature,
         candidate_selection_mode=args.candidate_selection_mode,
         budget_mode=args.budget_mode,
         mixed_policy_ratio=args.mixed_policy_ratio,
