@@ -20,6 +20,14 @@ class RevealMAR(MAR):
         planner_loss_weight=1.0,
         candidate_pool_size=8,
         pseudo_target_type='none',
+        ref_target_horizon=1,
+        ref_target_local_radius=1,
+        ref_target_mix_alpha=0.5,
+        ref_target_policy='cosine',
+        ref_target_loss='feature_mse',
+        ref_target_max_candidates=8,
+        log_ref_target_debug=False,
+        log_ref_target_freq=20,
         sampling_policy='baseline',
         uncertainty_mc_samples=2,
         uncertainty_policy_temperature=1.0,
@@ -32,6 +40,14 @@ class RevealMAR(MAR):
         self.planner_loss_weight = planner_loss_weight
         self.candidate_pool_size = candidate_pool_size
         self.pseudo_target_type = pseudo_target_type
+        self.ref_target_horizon = ref_target_horizon
+        self.ref_target_local_radius = ref_target_local_radius
+        self.ref_target_mix_alpha = ref_target_mix_alpha
+        self.ref_target_policy = ref_target_policy
+        self.ref_target_loss = ref_target_loss
+        self.ref_target_max_candidates = ref_target_max_candidates
+        self.log_ref_target_debug = log_ref_target_debug
+        self.log_ref_target_freq = log_ref_target_freq
         self.sampling_policy = sampling_policy
         self.uncertainty_mc_samples = uncertainty_mc_samples
         self.uncertainty_policy_temperature = uncertainty_policy_temperature
@@ -41,9 +57,14 @@ class RevealMAR(MAR):
 
         super().__init__(**kwargs)
 
-        valid_pseudo_target_types = {'none', 'gt_reveal', 'pred_reveal', 'mixed_reveal'}
+        valid_pseudo_target_types = {
+            'none', 'gt_reveal', 'pred_reveal', 'mixed_reveal',
+            'ref_gt_reveal', 'ref_pred_reveal', 'ref_mixed_reveal',
+        }
         valid_sampling_policies = {'baseline', 'planner', 'random', 'confidence', 'entropy'}
         valid_candidate_selection_modes = {'topk', 'mixed'}
+        valid_ref_target_policies = {'cosine'}
+        valid_ref_target_losses = {'feature_mse'}
         if self.pseudo_target_type not in valid_pseudo_target_types:
             raise ValueError(
                 "Unsupported pseudo_target_type {}. Expected one of {}".format(
@@ -62,9 +83,43 @@ class RevealMAR(MAR):
                     self.candidate_selection_mode, sorted(valid_candidate_selection_modes)
                 )
             )
+        if self.ref_target_policy not in valid_ref_target_policies:
+            raise ValueError(
+                "Unsupported ref_target_policy {}. Expected one of {}".format(
+                    self.ref_target_policy, sorted(valid_ref_target_policies)
+                )
+            )
+        if self.ref_target_loss not in valid_ref_target_losses:
+            raise ValueError(
+                "Unsupported ref_target_loss {}. Expected one of {}".format(
+                    self.ref_target_loss, sorted(valid_ref_target_losses)
+                )
+            )
         if not 0.0 <= self.mixed_policy_ratio <= 1.0:
             raise ValueError(
                 "Unsupported mixed_policy_ratio {}. Expected value in [0, 1]".format(self.mixed_policy_ratio)
+            )
+        if not 0.0 <= self.ref_target_mix_alpha <= 1.0:
+            raise ValueError(
+                "Unsupported ref_target_mix_alpha {}. Expected value in [0, 1]".format(
+                    self.ref_target_mix_alpha
+                )
+            )
+        if int(self.ref_target_horizon) < 1:
+            raise ValueError(
+                "Unsupported ref_target_horizon {}. Expected value >= 1".format(self.ref_target_horizon)
+            )
+        if int(self.ref_target_local_radius) < 0:
+            raise ValueError(
+                "Unsupported ref_target_local_radius {}. Expected value >= 0".format(
+                    self.ref_target_local_radius
+                )
+            )
+        if int(self.ref_target_max_candidates) < 1:
+            raise ValueError(
+                "Unsupported ref_target_max_candidates {}. Expected value >= 1".format(
+                    self.ref_target_max_candidates
+                )
             )
         if int(self.uncertainty_mc_samples) < 1:
             raise ValueError(
@@ -102,6 +157,12 @@ class RevealMAR(MAR):
             f"planner_loss_weight={self.planner_loss_weight}, "
             f"candidate_pool_size={self.candidate_pool_size}, "
             f"pseudo_target_type={self.pseudo_target_type}, "
+            f"ref_target_horizon={self.ref_target_horizon}, "
+            f"ref_target_local_radius={self.ref_target_local_radius}, "
+            f"ref_target_mix_alpha={self.ref_target_mix_alpha}, "
+            f"ref_target_policy={self.ref_target_policy}, "
+            f"ref_target_loss={self.ref_target_loss}, "
+            f"ref_target_max_candidates={self.ref_target_max_candidates}, "
             f"sampling_policy={self.sampling_policy}, "
             f"uncertainty_mc_samples={self.uncertainty_mc_samples}, "
             f"uncertainty_policy_temperature={self.uncertainty_policy_temperature}, "
@@ -436,6 +497,202 @@ class RevealMAR(MAR):
         pairwise_loss = F.softplus(-(rank_sign * score_diff))[valid_pair_mask].mean()
         return regression_loss + pairwise_loss
 
+    def _uses_reference_policy_target(self):
+        return self.pseudo_target_type in {'ref_gt_reveal', 'ref_pred_reveal', 'ref_mixed_reveal'}
+
+    def _infer_reference_reveal_count(self, masked_token_count):
+        if self.ref_target_horizon > 1:
+            raise NotImplementedError("ref_target_horizon > 1 is not implemented yet for training targets")
+        if masked_token_count <= 0:
+            return 0
+        if masked_token_count <= 1:
+            return 1
+
+        # The reference continuation policy is the cosine MAR reveal schedule.
+        # Training states are sampled by mask ratio rather than an explicit decoding step,
+        # so infer the nearest cosine step and advance one step.
+        num_iter = 64
+        best_step = 0
+        best_delta = None
+        for step in range(num_iter):
+            if step <= 0:
+                mask_len = self.seq_len
+            else:
+                ratio = math.cos(math.pi / 2.0 * float(step) / float(num_iter))
+                mask_len = max(1, min(self.seq_len - 1, int(math.floor(self.seq_len * ratio))))
+            delta = abs(mask_len - masked_token_count)
+            if best_delta is None or delta < best_delta:
+                best_delta = delta
+                best_step = step
+
+        next_step = min(num_iter - 1, best_step + 1)
+        ratio = math.cos(math.pi / 2.0 * float(next_step) / float(num_iter))
+        next_mask_len = max(1, min(masked_token_count - 1, int(math.floor(self.seq_len * ratio))))
+        return max(1, min(masked_token_count, masked_token_count - next_mask_len))
+
+    def _decode_tokens_with_mask(self, tokens, mask, class_embedding):
+        x_enc = self.forward_mae_encoder(tokens, mask.to(tokens.dtype), class_embedding)
+        return self.forward_mae_decoder(x_enc, mask.to(tokens.dtype))
+
+    def _local_feature_mse(self, z_state, gt_decoder_tokens, positions):
+        if positions.numel() == 0:
+            return z_state.new_zeros(())
+        sq = (z_state.float() - gt_decoder_tokens.float()).pow(2).mean(dim=-1)
+        return sq[positions].mean()
+
+    def _compute_reference_policy_pseudo_targets(
+        self,
+        gt_latents,
+        mask,
+        orders,
+        class_embedding,
+        z,
+        planner_scores_masked,
+        candidate_indices,
+        masked_positions,
+        masked_coords,
+        gt_decoder_tokens,
+    ):
+        """
+        Paper-aligned local utility target under a fixed reference continuation.
+
+        For horizon=1, pi_ref is the cosine MAR schedule. Neighborhoods use
+        Chebyshev distance on the 2D latent token grid.
+        """
+        if candidate_indices.numel() == 0 or planner_scores_masked.numel() == 0:
+            return torch.zeros_like(planner_scores_masked)
+
+        if self.ref_target_horizon > 1:
+            raise NotImplementedError("ref_target_horizon > 1 is not implemented yet for training targets")
+
+        bsz = mask.size(0)
+        mask_bool = mask.bool()
+        masked_counts = mask_bool.sum(dim=1)
+        assert torch.all(masked_counts == masked_counts[0]), "Expected equal masked-token count per sample"
+        masked_token_count = int(masked_counts[0].item())
+        if masked_token_count <= 0:
+            return torch.zeros_like(planner_scores_masked)
+
+        max_candidates = min(candidate_indices.size(1), int(self.ref_target_max_candidates))
+        if max_candidates <= 0:
+            return torch.zeros_like(planner_scores_masked)
+        candidate_indices_limited = candidate_indices[:, :max_candidates]
+        candidate_positions = torch.gather(masked_positions, 1, candidate_indices_limited)
+        candidate_coords = torch.gather(
+            masked_coords,
+            1,
+            candidate_indices_limited.unsqueeze(-1).expand(-1, -1, masked_coords.size(-1)),
+        )
+
+        reveal_count = self._infer_reference_reveal_count(masked_token_count)
+        next_mask_len = max(0, masked_token_count - reveal_count)
+        default_mask = mask_bool.clone()
+        if reveal_count > 0:
+            default_reveal_positions = orders[:, next_mask_len:masked_token_count]
+            default_mask.scatter_(
+                1,
+                default_reveal_positions,
+                torch.zeros_like(default_reveal_positions, dtype=torch.bool),
+            )
+
+        with torch.no_grad():
+            default_z = self._decode_tokens_with_mask(gt_latents, default_mask.to(gt_latents.dtype), class_embedding)
+            candidate_pred_latents = None
+            if self.pseudo_target_type in {'ref_pred_reveal', 'ref_mixed_reveal'}:
+                candidate_z = torch.gather(
+                    z.detach(),
+                    1,
+                    candidate_positions.unsqueeze(-1).expand(-1, -1, z.size(-1)),
+                )
+                candidate_pred_latents = self.diffloss.sample(
+                    candidate_z.reshape(-1, candidate_z.size(-1)),
+                    temperature=1.0,
+                    cfg=1.0,
+                ).detach().view(bsz, max_candidates, -1)
+
+            utilities_gt = planner_scores_masked.new_zeros(bsz, max_candidates)
+            utilities_pred = planner_scores_masked.new_zeros(bsz, max_candidates)
+            radius = int(self.ref_target_local_radius)
+
+            for b in range(bsz):
+                for j in range(max_candidates):
+                    cand_pos = int(candidate_positions[b, j].item())
+                    cand_coord = candidate_coords[b, j]
+                    # Chebyshev radius: square local window on the latent token grid.
+                    dist = torch.max(torch.abs(masked_coords[b] - cand_coord), dim=-1).values
+                    local_masked_idx = (dist <= radius).nonzero(as_tuple=True)[0]
+                    if local_masked_idx.numel() == 0:
+                        local_positions = candidate_positions[b, j:j + 1]
+                    else:
+                        local_positions = torch.gather(masked_positions[b], 0, local_masked_idx)
+
+                    default_loss = self._local_feature_mse(default_z[b], gt_decoder_tokens[b], local_positions)
+
+                    if self.pseudo_target_type in {'ref_gt_reveal', 'ref_mixed_reveal'}:
+                        branch_mask = default_mask[b:b + 1].clone()
+                        branch_mask[0, cand_pos] = False
+                        branch_z = self._decode_tokens_with_mask(
+                            gt_latents[b:b + 1],
+                            branch_mask.to(gt_latents.dtype),
+                            class_embedding[b:b + 1],
+                        )
+                        branch_loss = self._local_feature_mse(
+                            branch_z[0], gt_decoder_tokens[b], local_positions
+                        )
+                        utilities_gt[b, j] = default_loss - branch_loss
+
+                    if self.pseudo_target_type in {'ref_pred_reveal', 'ref_mixed_reveal'}:
+                        branch_tokens = gt_latents[b:b + 1].clone()
+                        branch_tokens[0, cand_pos] = candidate_pred_latents[b, j].to(branch_tokens.dtype)
+                        branch_mask = default_mask[b:b + 1].clone()
+                        branch_mask[0, cand_pos] = False
+                        branch_z = self._decode_tokens_with_mask(
+                            branch_tokens,
+                            branch_mask.to(gt_latents.dtype),
+                            class_embedding[b:b + 1],
+                        )
+                        branch_loss = self._local_feature_mse(
+                            branch_z[0], gt_decoder_tokens[b], local_positions
+                        )
+                        utilities_pred[b, j] = default_loss - branch_loss
+
+            if self.pseudo_target_type == 'ref_gt_reveal':
+                utilities = utilities_gt
+            elif self.pseudo_target_type == 'ref_pred_reveal':
+                utilities = utilities_pred
+            else:
+                alpha = float(self.ref_target_mix_alpha)
+                utilities = alpha * utilities_gt + (1.0 - alpha) * utilities_pred
+
+            pseudo_target = torch.zeros_like(planner_scores_masked)
+            pseudo_target.scatter_(1, candidate_indices_limited, utilities.to(pseudo_target.dtype))
+
+        return pseudo_target.detach()
+
+    def _maybe_log_ref_target_debug(self, pseudo_target, candidate_indices):
+        if not self.log_ref_target_debug:
+            return
+        log_freq = int(self.log_ref_target_freq or 0)
+        if log_freq <= 0 or pseudo_target is None or candidate_indices.numel() == 0:
+            return
+        self._revealmar_ref_target_fwd_count = getattr(self, '_revealmar_ref_target_fwd_count', 0) + 1
+        if self._revealmar_ref_target_fwd_count % log_freq != 0 or not misc.is_main_process():
+            return
+
+        candidate_values = torch.gather(pseudo_target.detach(), dim=1, index=candidate_indices)
+        candidate_values = torch.nan_to_num(candidate_values.float(), nan=0.0, posinf=0.0, neginf=0.0)
+        print(
+            '[RevealMAR][ref-target] type={},candidates={},mean={:.6f},std={:.6f},min={:.6f},max={:.6f},pos_frac={:.6f}'.format(
+                self.pseudo_target_type,
+                int(candidate_values.numel()),
+                float(candidate_values.mean().item()) if candidate_values.numel() else 0.0,
+                float(candidate_values.std(unbiased=False).item()) if candidate_values.numel() else 0.0,
+                float(candidate_values.min().item()) if candidate_values.numel() else 0.0,
+                float(candidate_values.max().item()) if candidate_values.numel() else 0.0,
+                float((candidate_values > 0).float().mean().item()) if candidate_values.numel() else 0.0,
+            )
+        )
+
     def _apply_mixed_policy_training_mask(self, x, mask, orders, class_embedding):
         """
         Mixed-policy exposure for training only.
@@ -527,14 +784,29 @@ class RevealMAR(MAR):
             masked_coords=masked_coords,
             selection_mode=self.candidate_selection_mode,
         )
-        pseudo_target = build_pseudo_target(
-            planner_scores_masked,
-            candidate_indices,
-            masked_decoder_tokens,
-            masked_gt_decoder_tokens,
-            masked_coords,
-            pseudo_target_type=self.pseudo_target_type,
-        )
+        if self._uses_reference_policy_target():
+            pseudo_target = self._compute_reference_policy_pseudo_targets(
+                gt_latents=gt_latents,
+                mask=mask,
+                orders=orders,
+                class_embedding=class_embedding,
+                z=z,
+                planner_scores_masked=planner_scores_masked,
+                candidate_indices=candidate_indices,
+                masked_positions=mask_bool.nonzero(as_tuple=True)[1].view(z.size(0), masked_token_count),
+                masked_coords=masked_coords,
+                gt_decoder_tokens=gt_decoder_tokens,
+            )
+            self._maybe_log_ref_target_debug(pseudo_target, candidate_indices)
+        else:
+            pseudo_target = build_pseudo_target(
+                planner_scores_masked,
+                candidate_indices,
+                masked_decoder_tokens,
+                masked_gt_decoder_tokens,
+                masked_coords,
+                pseudo_target_type=self.pseudo_target_type,
+            )
         self.latest_candidate_indices = candidate_indices
         self.latest_pseudo_target = pseudo_target
 
