@@ -55,15 +55,25 @@ def parse_args():
 
 
 def read_text(path):
+    encodings = ["utf-8-sig", "utf-8", "utf-16", "utf-16-le", "gbk"]
     try:
-        return path.read_text(encoding="utf-8", errors="ignore")
+        data = path.read_bytes()
     except OSError:
         return ""
+    for encoding in encodings:
+        try:
+            return data.decode(encoding).replace("\x00", "")
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="ignore").replace("\x00", "")
 
 
 def load_json(path):
+    text = read_text(path).lstrip("\ufeff").strip()
+    if not text:
+        return {}
     try:
-        return json.loads(read_text(path))
+        return json.loads(text)
     except json.JSONDecodeError:
         return {}
 
@@ -191,11 +201,11 @@ def parse_debug_stats(text):
     }
 
 
-def status_for(text, fid, has_planner_head, has_resume_missing, has_ema_missing):
+def status_for(text, fid, planner_head_missing):
     lower = text.lower()
     if "traceback" in lower or "cuda out of memory" in lower or "runtimeerror" in lower:
         return "failed"
-    if has_planner_head and (has_resume_missing or has_ema_missing):
+    if planner_head_missing:
         return "planner_head_missing"
     if fid == "":
         return "no_metrics"
@@ -232,6 +242,7 @@ def build_row(run_dir):
     has_resume_missing = "Resume missing model keys" in log_text
     has_ema_missing = "EMA missing keys" in log_text
     has_planner_head = "planner_head" in log_text
+    planner_head_missing = has_planner_head and (has_resume_missing or has_ema_missing)
     debug_stats = parse_debug_stats(log_text)
 
     row = {
@@ -261,7 +272,7 @@ def build_row(run_dir):
         "run_dir": str(run_dir),
     }
     row.update(debug_stats)
-    row["status"] = status_for(log_text, fid, has_planner_head, has_resume_missing, has_ema_missing)
+    row["status"] = status_for(log_text, fid, planner_head_missing)
     return row
 
 
