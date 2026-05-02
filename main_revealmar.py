@@ -128,8 +128,13 @@ def get_args_parser():
                         choices=[
                             'none', 'gt_reveal', 'pred_reveal', 'mixed_reveal',
                             'ref_gt_reveal', 'ref_pred_reveal', 'ref_mixed_reveal',
+                            'control_zero', 'control_random', 'control_shuffle',
                         ],
                         help='pseudo target variant for RevealMAR scaffolding')
+    parser.add_argument('--control_random_std', default=1.0, type=float,
+                        help='standard deviation for control_random pseudo targets')
+    parser.add_argument('--control_random_seed', default=123, type=int,
+                        help='seed for deterministic same-parameter control pseudo targets')
     parser.add_argument('--ref_target_horizon', default=1, type=int,
                         help='reference-policy rollout horizon for ref_* pseudo targets')
     parser.add_argument('--ref_target_local_radius', default=1, type=int,
@@ -161,6 +166,18 @@ def get_args_parser():
     parser.add_argument('--budget_mode', default='soft', type=str,
                         choices=['soft', 'hard'],
                         help='budget mode for RevealMAR')
+    parser.add_argument('--budget_temperature', default=1.0, type=float,
+                        help='temperature tau for score-derived soft budget concentration')
+    parser.add_argument('--budget_score_scale', default=1.0, type=float,
+                        help='score multiplier before score-derived soft budget concentration')
+    parser.add_argument('--budget_min', default=1, type=int,
+                        help='minimum reveal budget for score-derived soft budget')
+    parser.add_argument('--budget_max', default=-1, type=int,
+                        help='maximum reveal budget for score-derived soft budget; -1 uses schedule upper bound')
+    parser.add_argument('--budget_ema_beta', default=0.0, type=float,
+                        help='EMA smoothing coefficient for score-derived soft budget sequence')
+    parser.add_argument('--budget_calibration_debug', action='store_true',
+                        help='Print compact score-derived budget calibration diagnostics during sampling')
     parser.add_argument('--mixed_policy_ratio', default=0.0, type=float,
                         help='mixed policy ratio for RevealMAR')
     parser.add_argument('--mixed_policy_ratio_schedule', default='constant', type=str,
@@ -181,6 +198,11 @@ def get_args_parser():
                         help='Print RevealMAR planner-sampling diagnostics during evaluation/sampling')
     parser.add_argument('--log_planner_sampling_steps', type=int, default=8,
                         help='Number of early sampling steps to summarize when planner-sampling debug is enabled')
+    parser.add_argument('--early_intervention_policy', default='none', type=str,
+                        choices=['none', 'random', 'confidence', 'entropy'],
+                        help='Opt-in diagnostic intervention for early planner reveal sets')
+    parser.add_argument('--early_intervention_steps', type=int, default=0,
+                        help='Number of initial planner decoding steps to replace with intervention policy')
 
     # 添加GPU内存日志参数
     parser.add_argument('--log_gpu_mem', action='store_true',
@@ -264,6 +286,8 @@ def main(args):
         planner_loss_weight=args.planner_loss_weight,
         candidate_pool_size=args.candidate_pool_size,
         pseudo_target_type=args.pseudo_target_type,
+        control_random_std=args.control_random_std,
+        control_random_seed=args.control_random_seed,
         ref_target_horizon=args.ref_target_horizon,
         ref_target_local_radius=args.ref_target_local_radius,
         ref_target_mix_alpha=args.ref_target_mix_alpha,
@@ -277,6 +301,12 @@ def main(args):
         uncertainty_policy_temperature=args.uncertainty_policy_temperature,
         candidate_selection_mode=args.candidate_selection_mode,
         budget_mode=args.budget_mode,
+        budget_temperature=args.budget_temperature,
+        budget_score_scale=args.budget_score_scale,
+        budget_min=args.budget_min,
+        budget_max=args.budget_max,
+        budget_ema_beta=args.budget_ema_beta,
+        budget_calibration_debug=args.budget_calibration_debug,
         mixed_policy_ratio=args.mixed_policy_ratio,
     )
 
@@ -310,6 +340,8 @@ def main(args):
     )
     model_without_ddp._revealmar_sampling_debug = bool(args.log_planner_sampling_debug)
     model_without_ddp._revealmar_sampling_debug_steps = int(args.log_planner_sampling_steps)
+    model_without_ddp._revealmar_early_intervention_policy = args.early_intervention_policy
+    model_without_ddp._revealmar_early_intervention_steps = int(args.early_intervention_steps)
     model_without_ddp._revealmar_mixed_policy_ratio_schedule = args.mixed_policy_ratio_schedule
     model_without_ddp._revealmar_mixed_policy_ratio_warmup_epochs = int(args.mixed_policy_ratio_warmup_epochs)
 

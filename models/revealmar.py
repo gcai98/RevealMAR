@@ -20,6 +20,8 @@ class RevealMAR(MAR):
         planner_loss_weight=1.0,
         candidate_pool_size=8,
         pseudo_target_type='none',
+        control_random_std=1.0,
+        control_random_seed=123,
         ref_target_horizon=1,
         ref_target_local_radius=1,
         ref_target_mix_alpha=0.5,
@@ -33,6 +35,12 @@ class RevealMAR(MAR):
         uncertainty_policy_temperature=1.0,
         candidate_selection_mode='topk',
         budget_mode='soft',
+        budget_temperature=1.0,
+        budget_score_scale=1.0,
+        budget_min=1,
+        budget_max=-1,
+        budget_ema_beta=0.0,
+        budget_calibration_debug=False,
         mixed_policy_ratio=0.0,
         **kwargs
     ):
@@ -40,6 +48,8 @@ class RevealMAR(MAR):
         self.planner_loss_weight = planner_loss_weight
         self.candidate_pool_size = candidate_pool_size
         self.pseudo_target_type = pseudo_target_type
+        self.control_random_std = control_random_std
+        self.control_random_seed = control_random_seed
         self.ref_target_horizon = ref_target_horizon
         self.ref_target_local_radius = ref_target_local_radius
         self.ref_target_mix_alpha = ref_target_mix_alpha
@@ -53,6 +63,12 @@ class RevealMAR(MAR):
         self.uncertainty_policy_temperature = uncertainty_policy_temperature
         self.candidate_selection_mode = candidate_selection_mode
         self.budget_mode = budget_mode
+        self.budget_temperature = budget_temperature
+        self.budget_score_scale = budget_score_scale
+        self.budget_min = budget_min
+        self.budget_max = budget_max
+        self.budget_ema_beta = budget_ema_beta
+        self.budget_calibration_debug = budget_calibration_debug
         self.mixed_policy_ratio = mixed_policy_ratio
 
         super().__init__(**kwargs)
@@ -60,6 +76,7 @@ class RevealMAR(MAR):
         valid_pseudo_target_types = {
             'none', 'gt_reveal', 'pred_reveal', 'mixed_reveal',
             'ref_gt_reveal', 'ref_pred_reveal', 'ref_mixed_reveal',
+            'control_zero', 'control_random', 'control_shuffle',
         }
         valid_sampling_policies = {'baseline', 'planner', 'random', 'confidence', 'entropy'}
         valid_candidate_selection_modes = {'topk', 'mixed'}
@@ -125,6 +142,26 @@ class RevealMAR(MAR):
             raise ValueError(
                 "Unsupported uncertainty_mc_samples {}. Expected value >= 1".format(self.uncertainty_mc_samples)
             )
+        if float(self.control_random_std) < 0.0:
+            raise ValueError(
+                "Unsupported control_random_std {}. Expected value >= 0".format(self.control_random_std)
+            )
+        if float(self.budget_temperature) <= 0.0:
+            raise ValueError(
+                "Unsupported budget_temperature {}. Expected value > 0".format(self.budget_temperature)
+            )
+        if int(self.budget_min) < 0:
+            raise ValueError(
+                "Unsupported budget_min {}. Expected value >= 0".format(self.budget_min)
+            )
+        if int(self.budget_max) != -1 and int(self.budget_max) < 1:
+            raise ValueError(
+                "Unsupported budget_max {}. Expected -1 or value >= 1".format(self.budget_max)
+            )
+        if not 0.0 <= float(self.budget_ema_beta) <= 1.0:
+            raise ValueError(
+                "Unsupported budget_ema_beta {}. Expected value in [0, 1]".format(self.budget_ema_beta)
+            )
 
         # Planner head is intentionally separate from baseline diffusion/value path.
         self.planner_head = nn.Sequential(
@@ -150,6 +187,9 @@ class RevealMAR(MAR):
         self.latest_sampling_entropy_trajectory = None
         self.latest_sampling_score_stats_trajectory = None
         self.latest_sampling_uncertainty_stats_trajectory = None
+        self.latest_sampling_selected_indices_trajectory = None
+        self.latest_sampling_selected_coords_trajectory = None
+        self.latest_sampling_early_intervention_applied_steps = 0
 
     def extra_repr(self):
         return (
@@ -157,6 +197,8 @@ class RevealMAR(MAR):
             f"planner_loss_weight={self.planner_loss_weight}, "
             f"candidate_pool_size={self.candidate_pool_size}, "
             f"pseudo_target_type={self.pseudo_target_type}, "
+            f"control_random_std={self.control_random_std}, "
+            f"control_random_seed={self.control_random_seed}, "
             f"ref_target_horizon={self.ref_target_horizon}, "
             f"ref_target_local_radius={self.ref_target_local_radius}, "
             f"ref_target_mix_alpha={self.ref_target_mix_alpha}, "
@@ -168,6 +210,11 @@ class RevealMAR(MAR):
             f"uncertainty_policy_temperature={self.uncertainty_policy_temperature}, "
             f"candidate_selection_mode={self.candidate_selection_mode}, "
             f"budget_mode={self.budget_mode}, "
+            f"budget_temperature={self.budget_temperature}, "
+            f"budget_score_scale={self.budget_score_scale}, "
+            f"budget_min={self.budget_min}, "
+            f"budget_max={self.budget_max}, "
+            f"budget_ema_beta={self.budget_ema_beta}, "
             f"mixed_policy_ratio={self.mixed_policy_ratio}"
         )
 
@@ -200,10 +247,13 @@ class RevealMAR(MAR):
                 )
             )
 
-    def _planner_score_entropy_summary(self, planner_scores_masked):
+    def _planner_score_entropy_summary(self, planner_scores_masked, temperature=1.0, score_scale=1.0):
         if planner_scores_masked.numel() == 0:
             return 0.0
-        probs = torch.softmax(planner_scores_masked.float(), dim=-1)
+        temperature = max(float(temperature), 1e-6)
+        scores = torch.nan_to_num(planner_scores_masked.float(), nan=0.0, posinf=0.0, neginf=0.0)
+        scores = scores * float(score_scale)
+        probs = torch.softmax(scores / temperature, dim=-1)
         probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
         entropy = -(probs * torch.log(probs.clamp_min(1e-8))).sum(dim=-1)
         entropy_norm = entropy / math.log(float(max(planner_scores_masked.size(1), 2)))
@@ -283,6 +333,8 @@ class RevealMAR(MAR):
         item = (
             '[RevealMAR][sampling-summary] '
             'policy={},budget_mode={},steps={},'
+            'budget_temperature={:.6f},budget_score_scale={:.6f},budget_ema_beta={:.6f},'
+            'budget_min_cfg={},budget_max_cfg={},'
             'budget_mean={:.6f},budget_min={:.6f},budget_max={:.6f},'
             'selected_mean={:.6f},selected_min={:.6f},selected_max={:.6f},'
             'conc_mean={:.6f},conc_min={:.6f},conc_max={:.6f},'
@@ -291,6 +343,11 @@ class RevealMAR(MAR):
                 self.sampling_policy,
                 self.budget_mode,
                 len(budget_trajectory),
+                float(self.budget_temperature),
+                float(self.budget_score_scale),
+                float(self.budget_ema_beta),
+                int(self.budget_min),
+                int(self.budget_max),
                 budget_mean,
                 budget_min,
                 budget_max,
@@ -401,21 +458,65 @@ class RevealMAR(MAR):
             reveal_count = max(1, reveal_count)
         return reveal_count
 
-    def _compute_reveal_budget(self, planner_scores_masked, masked_token_count, step, num_iter):
+    def _compute_reveal_budget(
+        self,
+        planner_scores_masked,
+        masked_token_count,
+        step,
+        num_iter,
+        previous_budget=None,
+        return_info=False,
+    ):
         hard_reveal_count = self._compute_scheduled_reveal_count(masked_token_count, step, num_iter)
         if self.budget_mode == 'hard' or masked_token_count <= 1 or step >= num_iter - 1:
+            if return_info:
+                return hard_reveal_count, {
+                    'schedule_reveal_count': hard_reveal_count,
+                    'effective_min': hard_reveal_count,
+                    'effective_max': hard_reveal_count,
+                    'raw_budget': hard_reveal_count,
+                    'smoothed_budget': hard_reveal_count,
+                    'concentration': 0.0,
+                }
             return hard_reveal_count
 
         # "soft" budget uses planner-score concentration to scale the fixed schedule budget:
         # lower entropy => sharper planner preference => reveal more this step.
-        probs = torch.softmax(planner_scores_masked.float(), dim=-1)
+        temperature = max(float(self.budget_temperature), 1e-6)
+        calibrated_scores = torch.nan_to_num(
+            planner_scores_masked.float(), nan=0.0, posinf=0.0, neginf=0.0
+        )
+        calibrated_scores = calibrated_scores * float(self.budget_score_scale)
+        probs = torch.softmax(calibrated_scores / temperature, dim=-1)
         probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
         entropy = -(probs * torch.log(probs.clamp_min(1e-8))).sum(dim=-1)
         entropy_norm = entropy / math.log(float(max(masked_token_count, 2)))
         concentration = (1.0 - entropy_norm).clamp(0.0, 1.0).mean().item()
 
         scaled_reveal = int(round(hard_reveal_count * (0.5 + 0.5 * concentration)))
-        return max(1, min(masked_token_count - 1, scaled_reveal))
+        if int(self.budget_max) == -1:
+            effective_max = hard_reveal_count
+        else:
+            effective_max = min(int(self.budget_max), hard_reveal_count)
+        effective_max = max(1, min(masked_token_count - 1, effective_max))
+        effective_min = min(max(1, int(self.budget_min)), effective_max)
+        raw_budget = max(effective_min, min(effective_max, scaled_reveal))
+        smoothed_budget = raw_budget
+        beta = float(self.budget_ema_beta)
+        if beta > 0.0 and previous_budget is not None:
+            smoothed_budget = int(round(beta * float(previous_budget) + (1.0 - beta) * float(raw_budget)))
+            smoothed_budget = max(effective_min, min(effective_max, smoothed_budget))
+
+        if return_info:
+            return smoothed_budget, {
+                'schedule_reveal_count': hard_reveal_count,
+                'effective_min': effective_min,
+                'effective_max': effective_max,
+                'raw_budget': raw_budget,
+                'smoothed_budget': smoothed_budget,
+                'concentration': float(concentration),
+            }
+        return smoothed_budget
 
     def _select_reveal_mask_from_scores(self, mask, reveal_count, masked_scores, masked_positions, masked_coords):
         bsz = mask.size(0)
@@ -450,6 +551,26 @@ class RevealMAR(MAR):
         return self._select_reveal_mask_from_scores(
             mask, reveal_count, planner_scores_masked, masked_positions, masked_coords
         )
+
+    def _selected_positions_and_coords_from_mask(self, mask_to_pred):
+        if not mask_to_pred.any():
+            return [], []
+        coords_lut = torch.stack(
+            torch.meshgrid(
+                torch.arange(self.seq_h, device=mask_to_pred.device),
+                torch.arange(self.seq_w, device=mask_to_pred.device),
+                indexing='ij',
+            ),
+            dim=-1,
+        ).view(-1, 2)
+        selected_indices = []
+        selected_coords = []
+        for b in range(mask_to_pred.size(0)):
+            positions = torch.nonzero(mask_to_pred[b], as_tuple=False).flatten()
+            selected_indices.append([int(v) for v in positions.detach().cpu().tolist()])
+            coords = coords_lut[positions] if positions.numel() else coords_lut.new_empty((0, 2))
+            selected_coords.append([[int(c[0]), int(c[1])] for c in coords.detach().cpu().tolist()])
+        return selected_indices, selected_coords
 
     def _fallback_reveal_mask(self, mask, reveal_all=False):
         mask_bool = mask.bool()
@@ -499,6 +620,87 @@ class RevealMAR(MAR):
 
     def _uses_reference_policy_target(self):
         return self.pseudo_target_type in {'ref_gt_reveal', 'ref_pred_reveal', 'ref_mixed_reveal'}
+
+    def _uses_control_target(self):
+        return self.pseudo_target_type in {'control_zero', 'control_random', 'control_shuffle'}
+
+    def _control_generator(self, device, salt):
+        gen = torch.Generator(device=device)
+        gen.manual_seed(int(self.control_random_seed) + int(salt))
+        return gen
+
+    def _scatter_candidate_target_values(self, masked_scores, candidate_indices, candidate_values):
+        target = torch.zeros_like(masked_scores, dtype=masked_scores.dtype)
+        if candidate_indices.numel() == 0:
+            return target.detach()
+        target.scatter_(dim=1, index=candidate_indices, src=candidate_values.to(dtype=target.dtype))
+        return target.detach()
+
+    def _compute_control_pseudo_targets(
+        self,
+        planner_scores_masked,
+        candidate_indices,
+        masked_decoder_tokens,
+        masked_gt_decoder_tokens,
+        masked_coords,
+    ):
+        if candidate_indices.numel() == 0:
+            return torch.zeros_like(planner_scores_masked).detach()
+
+        bsz, candidate_count = candidate_indices.shape
+        if self.pseudo_target_type == 'control_zero':
+            candidate_values = torch.zeros(
+                bsz,
+                candidate_count,
+                device=planner_scores_masked.device,
+                dtype=planner_scores_masked.dtype,
+            )
+            return self._scatter_candidate_target_values(planner_scores_masked, candidate_indices, candidate_values)
+
+        salt = getattr(self, '_revealmar_control_target_fwd_count', 0)
+        self._revealmar_control_target_fwd_count = salt + 1
+        gen = self._control_generator(planner_scores_masked.device, salt)
+        if self.pseudo_target_type == 'control_random':
+            candidate_values = torch.randn(
+                bsz,
+                candidate_count,
+                device=planner_scores_masked.device,
+                dtype=planner_scores_masked.dtype,
+                generator=gen,
+            )
+            candidate_values = candidate_values * float(self.control_random_std)
+            return self._scatter_candidate_target_values(planner_scores_masked, candidate_indices, candidate_values)
+
+        if self.pseudo_target_type == 'control_shuffle':
+            mixed_target = build_pseudo_target(
+                planner_scores_masked,
+                candidate_indices,
+                masked_decoder_tokens,
+                masked_gt_decoder_tokens,
+                masked_coords,
+                pseudo_target_type='mixed_reveal',
+            )
+            candidate_values = torch.gather(mixed_target.detach(), dim=1, index=candidate_indices).clone()
+            shuffled_values = []
+            for b in range(bsz):
+                perm = torch.randperm(candidate_count, device=planner_scores_masked.device, generator=gen)
+                shuffled_values.append(candidate_values[b, perm])
+            candidate_values = torch.stack(shuffled_values, dim=0)
+            return self._scatter_candidate_target_values(planner_scores_masked, candidate_indices, candidate_values)
+
+        raise ValueError("Unsupported control pseudo_target_type: {}".format(self.pseudo_target_type))
+
+    def _candidate_target_stats(self, pseudo_target, candidate_indices):
+        if pseudo_target is None or candidate_indices is None or candidate_indices.numel() == 0:
+            return {'target_mean': 0.0, 'target_std': 0.0}
+        values = torch.gather(pseudo_target.detach(), dim=1, index=candidate_indices)
+        values = torch.nan_to_num(values.float(), nan=0.0, posinf=0.0, neginf=0.0)
+        if values.numel() == 0:
+            return {'target_mean': 0.0, 'target_std': 0.0}
+        return {
+            'target_mean': float(values.mean().item()),
+            'target_std': float(values.std(unbiased=False).item()),
+        }
 
     def _infer_reference_reveal_count(self, masked_token_count):
         if self.ref_target_horizon > 1:
@@ -798,6 +1000,14 @@ class RevealMAR(MAR):
                 gt_decoder_tokens=gt_decoder_tokens,
             )
             self._maybe_log_ref_target_debug(pseudo_target, candidate_indices)
+        elif self._uses_control_target():
+            pseudo_target = self._compute_control_pseudo_targets(
+                planner_scores_masked,
+                candidate_indices,
+                masked_decoder_tokens,
+                masked_gt_decoder_tokens,
+                masked_coords,
+            )
         else:
             pseudo_target = build_pseudo_target(
                 planner_scores_masked,
@@ -823,12 +1033,15 @@ class RevealMAR(MAR):
         if log_freq > 0:
             self._revealmar_fwd_count = getattr(self, '_revealmar_fwd_count', 0) + 1
             if self._revealmar_fwd_count % log_freq == 0 and misc.is_main_process():
+                target_stats = self._candidate_target_stats(pseudo_target, candidate_indices)
                 print(
-                    '[RevealMAR] fwd={} total_loss={:.6f} diffloss={:.6f} planner_aux_loss={:.6f}'.format(
+                    '[RevealMAR] fwd={} total_loss={:.6f} diffloss={:.6f} planner_aux_loss={:.6f} target_mean={:.6f} target_std={:.6f}'.format(
                         self._revealmar_fwd_count,
                         float(self.latest_total_loss),
                         float(self.latest_diffloss),
                         float(self.latest_planner_aux_loss),
+                        target_stats['target_mean'],
+                        target_stats['target_std'],
                     )
                 )
 
@@ -861,6 +1074,12 @@ class RevealMAR(MAR):
         entropy_trajectory = []
         score_stats_trajectory = []
         uncertainty_stats_trajectory = []
+        selected_indices_trajectory = []
+        selected_coords_trajectory = []
+        previous_soft_budget = None
+        intervention_policy = getattr(self, '_revealmar_early_intervention_policy', 'none')
+        intervention_steps = int(getattr(self, '_revealmar_early_intervention_steps', 0) or 0)
+        intervention_applied_steps = 0
 
         for step in indices:
             if not mask.bool().any():
@@ -886,8 +1105,10 @@ class RevealMAR(MAR):
             masked_counts = mask.sum(dim=1)
             assert torch.all(masked_counts == masked_counts[0]), "Expected equal masked-token count per sample"
             masked_token_count = int(masked_counts[0].item())
+            planner_scores_for_budget = None
             if self.sampling_policy == 'planner':
                 sampling_scores_masked, masked_positions, masked_coords = self._compute_masked_planner_scores(z_cond, mask)
+                planner_scores_for_budget = sampling_scores_masked
                 uncertainty_scores_masked = None
             elif self.sampling_policy == 'random':
                 sampling_scores_masked, masked_positions, masked_coords = self._compute_random_masked_scores(mask)
@@ -906,17 +1127,53 @@ class RevealMAR(MAR):
             else:
                 raise ValueError("Unsupported sampling_policy during sampling: {}".format(self.sampling_policy))
 
-            score_concentration = self._planner_score_entropy_summary(sampling_scores_masked)
+            budget_scores_masked = planner_scores_for_budget if planner_scores_for_budget is not None else sampling_scores_masked
+            if self.budget_mode == 'soft':
+                score_concentration = self._planner_score_entropy_summary(
+                    budget_scores_masked,
+                    temperature=self.budget_temperature,
+                    score_scale=self.budget_score_scale,
+                )
+            else:
+                score_concentration = self._planner_score_entropy_summary(budget_scores_masked)
             score_stats = self._planner_score_debug_summary(sampling_scores_masked, self.candidate_pool_size)
             uncertainty_stats = self._uncertainty_debug_summary(uncertainty_scores_masked)
-            reveal_count = self._compute_reveal_budget(sampling_scores_masked, masked_token_count, step, num_iter)
+            reveal_count, budget_debug_info = self._compute_reveal_budget(
+                budget_scores_masked,
+                masked_token_count,
+                step,
+                num_iter,
+                previous_budget=previous_soft_budget,
+                return_info=True,
+            )
             if reveal_count <= 0 and masked_token_count > 0:
                 reveal_count = masked_token_count if step >= num_iter - 1 else 1
-            if self.sampling_policy == 'planner':
+            if self.budget_mode == 'soft':
+                previous_soft_budget = int(reveal_count)
+            selection_scores_masked = sampling_scores_masked
+            intervention_active = (
+                self.sampling_policy == 'planner'
+                and intervention_policy in ('random', 'confidence', 'entropy')
+                and intervention_steps > 0
+                and step < intervention_steps
+            )
+            if intervention_active:
+                if intervention_policy == 'random':
+                    selection_scores_masked, masked_positions, masked_coords = self._compute_random_masked_scores(mask)
+                else:
+                    intervention_uncertainty, masked_positions, masked_coords = self._compute_uncertainty_masked_scores(
+                        z_cond,
+                        mask,
+                        mc_samples=self.uncertainty_mc_samples,
+                        temperature=self.uncertainty_policy_temperature,
+                    )
+                    selection_scores_masked = intervention_uncertainty if intervention_policy == 'entropy' else -intervention_uncertainty
+                intervention_applied_steps += 1
+            if self.sampling_policy == 'planner' and not intervention_active:
                 mask_to_pred = self._select_planner_reveal_mask(z_cond, mask, reveal_count)
             else:
                 mask_to_pred = self._select_reveal_mask_from_scores(
-                    mask, reveal_count, sampling_scores_masked, masked_positions, masked_coords
+                    mask, reveal_count, selection_scores_masked, masked_positions, masked_coords
                 )
             if not mask_to_pred.any() and masked_token_count > 0:
                 mask_to_pred = self._fallback_reveal_mask(mask, reveal_all=(step >= num_iter - 1))
@@ -930,6 +1187,30 @@ class RevealMAR(MAR):
             entropy_trajectory.append(float(score_concentration))
             score_stats_trajectory.append(score_stats)
             uncertainty_stats_trajectory.append(uncertainty_stats)
+            selected_indices, selected_coords = self._selected_positions_and_coords_from_mask(mask_to_pred)
+            selected_indices_trajectory.append(selected_indices)
+            selected_coords_trajectory.append(selected_coords)
+
+            if (
+                self.budget_mode == 'soft'
+                and self.budget_calibration_debug
+                and misc.is_main_process()
+                and step < debug_sampling_steps
+            ):
+                print(
+                    '[RevealMAR][budget-calibration] step{}:schedule={},raw={},budget={},min={},max={},conc={:.4f},tau={:.4f},scale={:.4f},beta={:.4f}'.format(
+                        step,
+                        int(budget_debug_info.get('schedule_reveal_count', reveal_count)),
+                        int(budget_debug_info.get('raw_budget', reveal_count)),
+                        int(reveal_count),
+                        int(budget_debug_info.get('effective_min', reveal_count)),
+                        int(budget_debug_info.get('effective_max', reveal_count)),
+                        float(budget_debug_info.get('concentration', score_concentration)),
+                        float(self.budget_temperature),
+                        float(self.budget_score_scale),
+                        float(self.budget_ema_beta),
+                    )
+                )
 
             if not cfg == 1.0:
                 mask_to_pred_model = torch.cat([mask_to_pred, mask_to_pred], dim=0)
@@ -960,7 +1241,18 @@ class RevealMAR(MAR):
         self.latest_sampling_entropy_trajectory = entropy_trajectory
         self.latest_sampling_score_stats_trajectory = score_stats_trajectory
         self.latest_sampling_uncertainty_stats_trajectory = uncertainty_stats_trajectory
+        self.latest_sampling_selected_indices_trajectory = selected_indices_trajectory
+        self.latest_sampling_selected_coords_trajectory = selected_coords_trajectory
+        self.latest_sampling_early_intervention_applied_steps = intervention_applied_steps
         if debug_sampling and misc.is_main_process():
+            if intervention_policy != 'none' and intervention_steps > 0:
+                print(
+                    '[RevealMAR][early-intervention] policy={},steps={},applied_steps={}'.format(
+                        intervention_policy,
+                        intervention_steps,
+                        intervention_applied_steps,
+                    )
+                )
             shown_steps = min(debug_sampling_steps, len(budget_trajectory))
             summary = []
             for i in range(shown_steps):
