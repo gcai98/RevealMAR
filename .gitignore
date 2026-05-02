@@ -1,8 +1,39 @@
+# Python cache
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 .pyc_tmp/
+.pycache_tmp/
 .pycache_prefix/
 .pycache_check_new/
+.pytest_cache/
+
+# Checkpoints and model weights
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+
+# Logs and TensorBoard
+*.log
+events.out.tfevents.*
+
+# Experiment outputs
+p0_runs/*/
+outputs/
+output_dir/
+generated/
+samples/
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Keep P0 documentation tracked
+!p0_runs/
+!p0_runs/*.txt
+!p0_runs/README_*.txt
+
+# OS metadata
 .DS_Store
 Thumbs.db
-output_dir/
