@@ -134,16 +134,16 @@ def status_for(text, fid):
     return "ok"
 
 
-def find_log(root, model_name, policy, num_iter):
-    run_dir = root / model_name / "eval_main" / f"{policy}_iter{num_iter}"
+def find_log(root, model_name, policy, num_iter, eval_name):
+    run_dir = root / model_name / eval_name / f"{policy}_iter{num_iter}"
     run_log = run_dir / "eval.log"
     if run_log.exists():
         return run_dir, run_log
-    log_path = root / model_name / "logs" / f"eval_{policy}_iter{num_iter}.log"
+    log_path = root / model_name / "logs" / f"{eval_name}_{policy}_iter{num_iter}.log"
     return run_dir, log_path
 
 
-def collect(root, models, skip_missing_models=False):
+def collect(root, models, eval_name, skip_missing_models=False):
     rows = []
     for model_name in models:
         model_root = root / model_name
@@ -152,7 +152,7 @@ def collect(root, models, skip_missing_models=False):
             continue
         for policy in POLICIES:
             for num_iter in NUM_ITERS:
-                run_dir, log_path = find_log(root, model_name, policy, num_iter)
+                run_dir, log_path = find_log(root, model_name, policy, num_iter, eval_name)
                 text = read_text(log_path)
                 fid = parse_metric(text, ("FID", "fid"))
                 inception = parse_metric(text, ("Inception Score", "IS", "inception_score"))
@@ -212,6 +212,7 @@ def main():
     parser.add_argument("--models", default="all")
     parser.add_argument("--skip_missing_models", action="store_true")
     parser.add_argument("--output_prefix", default="")
+    parser.add_argument("--eval_name", default="eval_main")
     args = parser.parse_args()
 
     root = Path(args.root)
@@ -219,10 +220,11 @@ def main():
 
     print(f"[collect_main_results] root={root}")
     print(f"[collect_main_results] models={','.join(models)}")
+    print(f"[collect_main_results] eval_name={args.eval_name}")
     print(f"[collect_main_results] skip_missing_models={args.skip_missing_models}")
     print(f"[collect_main_results] output_prefix={args.output_prefix}")
 
-    rows = collect(root, models, args.skip_missing_models)
+    rows = collect(root, models, args.eval_name, args.skip_missing_models)
     summary_csv = root / output_name(args.output_prefix, "main_results_summary.csv")
     summary_json = root / output_name(args.output_prefix, "main_results_summary.json")
     pareto_csv = root / output_name(args.output_prefix, "pareto_data.csv")

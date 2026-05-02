@@ -72,6 +72,67 @@ Probe checkpoints are saved to:
 
    ${OUTPUT_ROOT}/{model}/train_ref_mixed_ep1_probe/
 
+1-Epoch Full-Chain Validation With 1000 Images
+----------------------------------------------
+
+This validates the full train+eval chain before expensive final training. It
+trains for 1 epoch, then evaluates baseline, confidence, entropy, and planner
+at num_iter=64,128,256 with 1000 generated images per run.
+
+Base:
+
+   nohup bash scripts_server/run_base_ep1_eval1000_chain.sh \
+   > /root/autodl-tmp/outputs/planmar_main/base_ep1_eval1000_chain.nohup.log 2>&1 &
+
+Large:
+
+   nohup bash scripts_server/run_large_ep1_eval1000_chain.sh \
+   > /root/autodl-tmp/outputs/planmar_main/large_ep1_eval1000_chain.nohup.log 2>&1 &
+
+Huge:
+
+   nohup bash scripts_server/run_huge_ep1_eval1000_chain.sh \
+   > /root/autodl-tmp/outputs/planmar_main/huge_ep1_eval1000_chain.nohup.log 2>&1 &
+
+Collector for base:
+
+   python scripts_server/collect_main_results.py \
+     --root /root/autodl-tmp/outputs/planmar_main \
+     --models base \
+     --skip_missing_models \
+     --output_prefix base_ep1_1000 \
+     --eval_name eval_main_ep1_1000
+
+Collector for large:
+
+   python scripts_server/collect_main_results.py \
+     --root /root/autodl-tmp/outputs/planmar_main \
+     --models large \
+     --skip_missing_models \
+     --output_prefix large_ep1_1000 \
+     --eval_name eval_main_ep1_1000
+
+Collector for huge:
+
+   python scripts_server/collect_main_results.py \
+     --root /root/autodl-tmp/outputs/planmar_main \
+     --models huge \
+     --skip_missing_models \
+     --output_prefix huge_ep1_1000 \
+     --eval_name eval_main_ep1_1000
+
+1-epoch full-chain outputs are saved to:
+
+   ${OUTPUT_ROOT}/{model}/train_ref_mixed_ep1_chain/
+   ${OUTPUT_ROOT}/{model}/eval_main_ep1_1000/
+
+Final formal outputs are saved to:
+
+   ${OUTPUT_ROOT}/{model}/train_ref_mixed/
+   ${OUTPUT_ROOT}/{model}/eval_main/
+
+Do not mix ep1 chain outputs with final outputs.
+
 Final Train-Then-Eval
 ---------------------
 

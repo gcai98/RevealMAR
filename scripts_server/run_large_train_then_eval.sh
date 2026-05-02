@@ -30,6 +30,12 @@ MODEL_NAME=large
 echo "TRAIN_RUN_NAME=${TRAIN_RUN_NAME}"
 echo "TRAIN_EPOCHS=${TRAIN_EPOCHS}"
 echo "WARMUP_EPOCHS=${WARMUP_EPOCHS}"
+echo "EVAL_RUN_NAME=${EVAL_RUN_NAME}"
+echo "EVAL_NUM_IMAGES=${EVAL_NUM_IMAGES}"
+echo "EVAL_CLASS_NUM=${EVAL_CLASS_NUM}"
+echo "EVAL_BSZ=${EVAL_BSZ}"
+echo "EVAL_NUM_ITERS=${EVAL_NUM_ITERS}"
+echo "EVAL_POLICIES=${EVAL_POLICIES}"
 
 bash "${SCRIPT_DIR}/check_server_ready.sh" "${MODEL_NAME}"
 bash "${SCRIPT_DIR}/train_large_ref_mixed.sh"

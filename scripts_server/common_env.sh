@@ -17,6 +17,13 @@ TRAIN_EPOCHS=${TRAIN_EPOCHS:-1}
 WARMUP_EPOCHS=${WARMUP_EPOCHS:-1}
 TRAIN_RUN_NAME=${TRAIN_RUN_NAME:-train_ref_mixed}
 
+EVAL_RUN_NAME=${EVAL_RUN_NAME:-eval_main}
+EVAL_NUM_IMAGES=${EVAL_NUM_IMAGES:-50000}
+EVAL_CLASS_NUM=${EVAL_CLASS_NUM:-1000}
+EVAL_BSZ=${EVAL_BSZ:-256}
+EVAL_NUM_ITERS=${EVAL_NUM_ITERS:-64,128,256}
+EVAL_POLICIES=${EVAL_POLICIES:-baseline,confidence,entropy,planner}
+
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-8}
 
@@ -46,6 +53,12 @@ print_gpu_info() {
   else
     echo "[WARN] nvidia-smi not found"
   fi
+}
+
+split_csv() {
+  local value="$1"
+  local array_name="$2"
+  IFS=',' read -r -a "${array_name}" <<< "${value}"
 }
 
 model_cfg() {
