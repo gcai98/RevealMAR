@@ -71,3 +71,6 @@ for POLICY in "${POLICIES[@]}"; do
     fi
   done
 done
+
+echo "To collect huge results:"
+echo "python scripts_server/collect_main_results.py --root ${OUTPUT_ROOT} --models huge --skip_missing_models --output_prefix huge"

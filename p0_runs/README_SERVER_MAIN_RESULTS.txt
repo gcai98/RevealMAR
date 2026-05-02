@@ -68,16 +68,33 @@ Each model directory contains:
 Merging Results
 ---------------
 
-After all servers finish, copy or rsync the base, large, and huge folders into
-the same OUTPUT_ROOT on one machine. Then run:
+Per-server collection can be run before merging:
 
-   python scripts_server/collect_main_results.py --root /root/autodl-tmp/outputs/planmar_main
+On Server-Base:
+
+   python scripts_server/collect_main_results.py --root /root/autodl-tmp/outputs/planmar_main --models base --skip_missing_models --output_prefix base
+
+On Server-Large:
+
+   python scripts_server/collect_main_results.py --root /root/autodl-tmp/outputs/planmar_main --models large --skip_missing_models --output_prefix large
+
+On Server-Huge:
+
+   python scripts_server/collect_main_results.py --root /root/autodl-tmp/outputs/planmar_main --models huge --skip_missing_models --output_prefix huge
+
+After all servers finish, copy or rsync the base, large, and huge folders into
+the same OUTPUT_ROOT on one machine. Then run the final merged collection:
+
+   python scripts_server/collect_main_results.py --root /root/autodl-tmp/outputs/planmar_main --models all
 
 Collector outputs:
 
    main_results_summary.csv
    main_results_summary.json
    pareto_data.csv
+
+With --output_prefix base, large, or huge, the collector writes prefixed files
+such as base_main_results_summary.csv and base_pareto_data.csv.
 
 Notes
 -----

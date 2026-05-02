@@ -8,6 +8,7 @@ from pathlib import Path
 
 DEFAULT_ROOT = "/root/autodl-tmp/outputs/planmar_main"
 MODELS = ("base", "large", "huge")
+MODEL_SET = set(MODELS)
 POLICIES = ("baseline", "confidence", "entropy", "planner")
 NUM_ITERS = (64, 128, 256)
 
@@ -42,6 +43,25 @@ def read_text(path):
 
 def fmt(value):
     return "NA" if value in ("", None) else str(value)
+
+
+def parse_models(models_arg):
+    if models_arg.strip().lower() == "all":
+        return list(MODELS)
+    models = [item.strip().lower() for item in models_arg.split(",") if item.strip()]
+    if not models:
+        raise ValueError("--models must be 'all' or a comma-separated list")
+    invalid = [name for name in models if name not in MODEL_SET]
+    if invalid:
+        raise ValueError("Invalid model name(s): {}. Expected one of: {}".format(
+            ", ".join(invalid),
+            ", ".join(MODELS),
+        ))
+    return models
+
+
+def output_name(prefix, base_name):
+    return base_name if not prefix else f"{prefix}_{base_name}"
 
 
 def parse_float(text):
@@ -123,9 +143,13 @@ def find_log(root, model_name, policy, num_iter):
     return run_dir, log_path
 
 
-def collect(root):
+def collect(root, models, skip_missing_models=False):
     rows = []
-    for model_name in MODELS:
+    for model_name in models:
+        model_root = root / model_name
+        if skip_missing_models and not model_root.exists():
+            print(f"[WARN] Skipping missing model directory: {model_root}")
+            continue
         for policy in POLICIES:
             for num_iter in NUM_ITERS:
                 run_dir, log_path = find_log(root, model_name, policy, num_iter)
@@ -185,13 +209,23 @@ def print_table(rows):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=DEFAULT_ROOT)
+    parser.add_argument("--models", default="all")
+    parser.add_argument("--skip_missing_models", action="store_true")
+    parser.add_argument("--output_prefix", default="")
     args = parser.parse_args()
 
     root = Path(args.root)
-    rows = collect(root)
-    summary_csv = root / "main_results_summary.csv"
-    summary_json = root / "main_results_summary.json"
-    pareto_csv = root / "pareto_data.csv"
+    models = parse_models(args.models)
+
+    print(f"[collect_main_results] root={root}")
+    print(f"[collect_main_results] models={','.join(models)}")
+    print(f"[collect_main_results] skip_missing_models={args.skip_missing_models}")
+    print(f"[collect_main_results] output_prefix={args.output_prefix}")
+
+    rows = collect(root, models, args.skip_missing_models)
+    summary_csv = root / output_name(args.output_prefix, "main_results_summary.csv")
+    summary_json = root / output_name(args.output_prefix, "main_results_summary.json")
+    pareto_csv = root / output_name(args.output_prefix, "pareto_data.csv")
 
     write_csv(summary_csv, rows, FIELDS)
     summary_json.parent.mkdir(parents=True, exist_ok=True)
