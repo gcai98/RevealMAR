@@ -76,6 +76,13 @@ def train_one_epoch(model, vae,
         print('log_dir: {}'.format(log_writer.log_dir))
 
     for data_iter_step, (samples, labels) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+        if int(getattr(args, "max_train_steps", -1) or -1) > 0 and data_iter_step >= int(args.max_train_steps):
+            print(
+                "[Preflight] Reached max_train_steps={}, stopping train epoch early.".format(
+                    int(args.max_train_steps)
+                )
+            )
+            break
 
         # we use a per iteration (instead of per epoch) lr scheduler
         lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
@@ -183,8 +190,18 @@ def evaluate(model_without_ddp, vae, ema_params, args, epoch, batch_size=16, log
     local_rank = misc.get_rank()
     used_time = 0
     gen_img_cnt = 0
+    eval_truncated = False
+    max_eval_batches = int(getattr(args, "max_eval_batches", -1) or -1)
 
     for i in range(num_steps):
+        if max_eval_batches > 0 and i >= max_eval_batches:
+            print(
+                "[Preflight] Reached max_eval_batches={}, stopping eval early.".format(
+                    max_eval_batches
+                )
+            )
+            eval_truncated = True
+            break
         print("Generation step {}/{}".format(i, num_steps))
 
         labels_gen = class_label_gen_world[world_size * batch_size * i + local_rank * batch_size:
@@ -246,6 +263,13 @@ def evaluate(model_without_ddp, vae, ema_params, args, epoch, batch_size=16, log
 
 
     # compute FID and IS
+    if eval_truncated:
+        print("[Preflight] Skipping FID/IS because eval was intentionally truncated.")
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+        time.sleep(10)
+        return
+
     if log_writer is not None:
         if args.img_size == 256:
             input2 = None

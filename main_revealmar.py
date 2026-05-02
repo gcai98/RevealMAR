@@ -51,6 +51,12 @@ def get_args_parser():
     parser.add_argument('--label_drop_prob', default=0.1, type=float)
     parser.add_argument('--evaluate', action='store_true')
     parser.add_argument('--eval_bsz', type=int, default=64, help='generation batch size')
+    parser.add_argument('--max_train_steps', type=int, default=-1,
+                        help='preflight/debug only: stop each training epoch after N optimizer iterations')
+    parser.add_argument('--max_eval_batches', type=int, default=-1,
+                        help='preflight/debug only: stop generation after N eval batches')
+    parser.add_argument('--preflight_mode', action='store_true',
+                        help='mark this run as a bounded preflight sanity check')
 
     parser.add_argument('--weight_decay', type=float, default=0.02,
                         help='weight decay (default: 0.02)')
