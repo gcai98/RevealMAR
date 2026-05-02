@@ -27,9 +27,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common_env.sh"
 MODEL_NAME=huge
 
+echo "TRAIN_RUN_NAME=${TRAIN_RUN_NAME}"
+echo "TRAIN_EPOCHS=${TRAIN_EPOCHS}"
+echo "WARMUP_EPOCHS=${WARMUP_EPOCHS}"
+
 bash "${SCRIPT_DIR}/check_server_ready.sh" "${MODEL_NAME}"
 bash "${SCRIPT_DIR}/train_huge_ref_mixed.sh"
-check_path "${OUTPUT_ROOT}/${MODEL_NAME}/train_ref_mixed/checkpoint-last.pth" "trained ${MODEL_NAME} checkpoint"
+check_path "${OUTPUT_ROOT}/${MODEL_NAME}/${TRAIN_RUN_NAME}/checkpoint-last.pth" "trained ${MODEL_NAME} checkpoint"
 bash "${SCRIPT_DIR}/eval_huge_main.sh"
 
 echo "[OK] Final output root: ${OUTPUT_ROOT}/${MODEL_NAME}"

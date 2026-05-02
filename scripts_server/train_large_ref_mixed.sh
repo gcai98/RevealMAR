@@ -10,9 +10,15 @@ cd "${CODE_DIR}"
 model_cfg large
 
 MODEL_NAME=large
-TRAIN_DIR="${OUTPUT_ROOT}/${MODEL_NAME}/train_ref_mixed"
+TRAIN_DIR="${OUTPUT_ROOT}/${MODEL_NAME}/${TRAIN_RUN_NAME}"
 LOG_DIR="${OUTPUT_ROOT}/${MODEL_NAME}/logs"
 mkdir -p "${TRAIN_DIR}" "${LOG_DIR}"
+
+echo "MODEL_NAME=${MODEL_NAME}"
+echo "TRAIN_RUN_NAME=${TRAIN_RUN_NAME}"
+echo "TRAIN_EPOCHS=${TRAIN_EPOCHS}"
+echo "WARMUP_EPOCHS=${WARMUP_EPOCHS}"
+echo "TRAIN_DIR=${TRAIN_DIR}"
 
 CMD=(python main_revealmar.py
   --model "${MODEL}"
@@ -27,8 +33,8 @@ CMD=(python main_revealmar.py
   --diffloss_d "${DIFFLOSS_D}"
   --diffloss_w "${DIFFLOSS_W}"
   --diffusion_batch_mul 1
-  --epochs 1
-  --warmup_epochs 1
+  --epochs "${TRAIN_EPOCHS}"
+  --warmup_epochs "${WARMUP_EPOCHS}"
   --batch_size 64
   --blr 1.0e-4
   --num_workers 8
@@ -51,8 +57,8 @@ CMD=(python main_revealmar.py
   --dist_url env://)
 
 printf '%q ' "${CMD[@]}" > "${TRAIN_DIR}/run_args.txt"
-write_json_config "${TRAIN_DIR}/config.json" model_name="${MODEL_NAME}" model="${MODEL}" data_path="${DATA_ROOT}" resume="${PRETRAIN_CKPT}" output_dir="${TRAIN_DIR}" pseudo_target_type=ref_mixed_reveal candidate_selection_mode=mixed planner_loss_weight=1.0 mixed_policy_ratio=0.0
-"${CMD[@]}" 2>&1 | tee "${TRAIN_DIR}/train.log" "${LOG_DIR}/train_ref_mixed.log"
+write_json_config "${TRAIN_DIR}/config.json" model_name="${MODEL_NAME}" model="${MODEL}" train_run_name="${TRAIN_RUN_NAME}" train_epochs="${TRAIN_EPOCHS}" warmup_epochs="${WARMUP_EPOCHS}" data_path="${DATA_ROOT}" resume="${PRETRAIN_CKPT}" output_dir="${TRAIN_DIR}" pseudo_target_type=ref_mixed_reveal candidate_selection_mode=mixed planner_loss_weight=1.0 mixed_policy_ratio=0.0
+"${CMD[@]}" 2>&1 | tee "${TRAIN_DIR}/train.log" "${LOG_DIR}/${TRAIN_RUN_NAME}.log"
 
 check_path "${TRAIN_DIR}/checkpoint-last.pth" "trained checkpoint"
 echo "[OK] Trained checkpoint: ${TRAIN_DIR}/checkpoint-last.pth"

@@ -10,7 +10,7 @@ cd "${CODE_DIR}"
 model_cfg large
 
 MODEL_NAME=large
-TRAIN_DIR="${OUTPUT_ROOT}/${MODEL_NAME}/train_ref_mixed"
+TRAIN_DIR="${OUTPUT_ROOT}/${MODEL_NAME}/${TRAIN_RUN_NAME}"
 EVAL_ROOT="${OUTPUT_ROOT}/${MODEL_NAME}/eval_main"
 LOG_DIR="${OUTPUT_ROOT}/${MODEL_NAME}/logs"
 mkdir -p "${EVAL_ROOT}" "${LOG_DIR}"

@@ -22,9 +22,91 @@ Recommended Order
    bash scripts_server/run_large_train_then_eval.sh
    bash scripts_server/run_huge_train_then_eval.sh
 
-The top-level scripts run readiness checks, train ref_mixed_reveal for one
-epoch, then evaluate baseline, confidence, entropy, and planner at 64, 128, and
-256 decoding iterations.
+The top-level scripts run readiness checks, train ref_mixed_reveal for
+TRAIN_EPOCHS epochs, then evaluate baseline, confidence, entropy, and planner
+at 64, 128, and 256 decoding iterations.
+
+Training Run Names
+------------------
+
+Server training scripts read these optional environment variables:
+
+   TRAIN_EPOCHS
+   WARMUP_EPOCHS
+   TRAIN_RUN_NAME
+
+Defaults are safe for a 1-epoch validation:
+
+   TRAIN_EPOCHS=1
+   WARMUP_EPOCHS=1
+   TRAIN_RUN_NAME=train_ref_mixed
+
+Use a separate run name for probes so they do not overwrite final outputs.
+
+1-Epoch Validation Probe
+------------------------
+
+Run train_xxx_ref_mixed.sh directly for the 1-epoch validation. Do not use
+run_xxx_train_then_eval.sh for the probe, because the top-level script starts
+full evaluation after training.
+
+Base probe:
+
+   TRAIN_EPOCHS=1 WARMUP_EPOCHS=1 TRAIN_RUN_NAME=train_ref_mixed_ep1_probe \
+   nohup bash scripts_server/train_base_ref_mixed.sh \
+   > /root/autodl-tmp/outputs/planmar_main/base_ep1_probe.nohup.log 2>&1 &
+
+Large probe:
+
+   TRAIN_EPOCHS=1 WARMUP_EPOCHS=1 TRAIN_RUN_NAME=train_ref_mixed_ep1_probe \
+   nohup bash scripts_server/train_large_ref_mixed.sh \
+   > /root/autodl-tmp/outputs/planmar_main/large_ep1_probe.nohup.log 2>&1 &
+
+Huge probe:
+
+   TRAIN_EPOCHS=1 WARMUP_EPOCHS=1 TRAIN_RUN_NAME=train_ref_mixed_ep1_probe \
+   nohup bash scripts_server/train_huge_ref_mixed.sh \
+   > /root/autodl-tmp/outputs/planmar_main/huge_ep1_probe.nohup.log 2>&1 &
+
+Probe checkpoints are saved to:
+
+   ${OUTPUT_ROOT}/{model}/train_ref_mixed_ep1_probe/
+
+Final Train-Then-Eval
+---------------------
+
+After preflight and the 1-epoch probe pass, launch the first formal
+train-then-eval with a separate final run name.
+
+Use 10/1 first. The 400/100 setting was the original MAR-style long training
+setting and is not recommended for the first PlanMAR-S fine-tuning run.
+Consider 20/2 only if 10 epochs shows promising trends but is insufficient.
+
+Base final:
+
+   AUTO_SHUTDOWN=1 TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_RUN_NAME=train_ref_mixed \
+   nohup bash scripts_server/run_base_train_then_eval.sh \
+   > /root/autodl-tmp/outputs/planmar_main/base_full.nohup.log 2>&1 &
+
+Large final:
+
+   AUTO_SHUTDOWN=1 TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_RUN_NAME=train_ref_mixed \
+   nohup bash scripts_server/run_large_train_then_eval.sh \
+   > /root/autodl-tmp/outputs/planmar_main/large_full.nohup.log 2>&1 &
+
+Huge final:
+
+   AUTO_SHUTDOWN=1 TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_RUN_NAME=train_ref_mixed \
+   nohup bash scripts_server/run_huge_train_then_eval.sh \
+   > /root/autodl-tmp/outputs/planmar_main/huge_full.nohup.log 2>&1 &
+
+Final checkpoints are saved to:
+
+   ${OUTPUT_ROOT}/{model}/train_ref_mixed/
+
+Do not mix probe and final checkpoints. When evaluating a probe, pass
+TRAIN_RUN_NAME=train_ref_mixed_ep1_probe to the eval script; when evaluating
+final results, use TRAIN_RUN_NAME=train_ref_mixed.
 
 AutoDL Auto-Shutdown
 --------------------

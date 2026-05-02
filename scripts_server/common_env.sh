@@ -13,6 +13,10 @@ MAR_HUGE_CKPT=${MAR_HUGE_CKPT:-${PRETRAIN_ROOT}/mar/mar_huge}
 CONDA_SH=${CONDA_SH:-/root/miniconda3/etc/profile.d/conda.sh}
 CONDA_ENV=${CONDA_ENV:-revealmar}
 
+TRAIN_EPOCHS=${TRAIN_EPOCHS:-1}
+WARMUP_EPOCHS=${WARMUP_EPOCHS:-1}
+TRAIN_RUN_NAME=${TRAIN_RUN_NAME:-train_ref_mixed}
+
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-8}
 
