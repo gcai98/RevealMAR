@@ -27,20 +27,7 @@ if not exist "%MODEL_ONLY_INIT%" mkdir "%MODEL_ONLY_INIT%"
 cd /d "%CODE_DIR%"
 
 echo Creating model-only init checkpoint for smoke training.
-echo import os > "%OUTPUT_DIR%\make_model_only_init.py"
-echo import sys >> "%OUTPUT_DIR%\make_model_only_init.py"
-echo import torch >> "%OUTPUT_DIR%\make_model_only_init.py"
-echo. >> "%OUTPUT_DIR%\make_model_only_init.py"
-echo src = sys.argv[1] >> "%OUTPUT_DIR%\make_model_only_init.py"
-echo dst_dir = sys.argv[2] >> "%OUTPUT_DIR%\make_model_only_init.py"
-echo os.makedirs(dst_dir, exist_ok=True) >> "%OUTPUT_DIR%\make_model_only_init.py"
-echo checkpoint = torch.load(src, map_location="cpu") >> "%OUTPUT_DIR%\make_model_only_init.py"
-echo out = {key: checkpoint[key] for key in ("model", "model_ema") if key in checkpoint} >> "%OUTPUT_DIR%\make_model_only_init.py"
-echo dst = os.path.join(dst_dir, "checkpoint-last.pth") >> "%OUTPUT_DIR%\make_model_only_init.py"
-echo torch.save(out, dst) >> "%OUTPUT_DIR%\make_model_only_init.py"
-echo print("saved model-only checkpoint to", dst) >> "%OUTPUT_DIR%\make_model_only_init.py"
-type "%OUTPUT_DIR%\make_model_only_init.py"
-python "%OUTPUT_DIR%\make_model_only_init.py" "%SOURCE_CHECKPOINT%" "%MODEL_ONLY_INIT%"
+python tools\make_model_only_checkpoint.py --src "%SOURCE_CHECKPOINT%" --dst_dir "%MODEL_ONLY_INIT%"
 if ERRORLEVEL 1 (
     echo [WARN] Failed to create model-only init checkpoint.
     exit /b 1

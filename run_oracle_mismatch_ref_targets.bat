@@ -50,21 +50,7 @@ if not exist "%MODEL_ONLY_INIT%" mkdir "%MODEL_ONLY_INIT%"
 cd /d "%CODE_DIR%"
 
 echo Creating model-only init checkpoint for oracle mismatch training.
-(
-    echo import os
-    echo import sys
-    echo import torch
-    echo.
-    echo src = sys.argv[1]
-    echo dst_dir = sys.argv[2]
-    echo os.makedirs(dst_dir, exist_ok=True)
-    echo checkpoint = torch.load(src, map_location="cpu"^)
-    echo out = {key: checkpoint[key] for key in ^("model", "model_ema"^) if key in checkpoint}
-    echo dst = os.path.join(dst_dir, "checkpoint-last.pth"^)
-    echo torch.save(out, dst^)
-    echo print("saved model-only checkpoint to", dst^)
-) > "%OUTPUT_ROOT%\make_model_only_init.py"
-python "%OUTPUT_ROOT%\make_model_only_init.py" "%SOURCE_CHECKPOINT%" "%MODEL_ONLY_INIT%"
+python tools\make_model_only_checkpoint.py --src "%SOURCE_CHECKPOINT%" --dst_dir "%MODEL_ONLY_INIT%"
 if ERRORLEVEL 1 (
     echo [WARN] Failed to create model-only init checkpoint. Continuing, but training may fail.
 )
