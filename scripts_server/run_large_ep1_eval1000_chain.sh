@@ -11,5 +11,17 @@ export EVAL_CLASS_NUM=${EVAL_CLASS_NUM:-1000}
 export EVAL_BSZ=${EVAL_BSZ:-32}
 export EVAL_NUM_ITERS=${EVAL_NUM_ITERS:-64,128,256}
 export EVAL_POLICIES=${EVAL_POLICIES:-baseline,confidence,entropy,planner}
+export AUTO_COLLECT=${AUTO_COLLECT:-1}
 
 bash scripts_server/run_large_train_then_eval.sh
+
+if [ "${AUTO_COLLECT}" = "1" ]; then
+  echo "[AUTO_COLLECT] Collecting large ep1 eval1000 results..."
+  python scripts_server/collect_main_results.py \
+    --root /root/autodl-tmp/outputs/planmar_main \
+    --models large \
+    --skip_missing_models \
+    --output_prefix large_ep1_1000 \
+    --eval_name eval_main_ep1_1000
+  echo "[AUTO_COLLECT] Done."
+fi

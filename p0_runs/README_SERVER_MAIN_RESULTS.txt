@@ -94,6 +94,11 @@ Huge:
    nohup bash scripts_server/run_huge_ep1_eval1000_chain.sh \
    > /root/autodl-tmp/outputs/planmar_main/huge_ep1_eval1000_chain.nohup.log 2>&1 &
 
+The ep1 eval1000 chain scripts automatically collect per-model results by
+default after evaluation finishes. Disable this with:
+
+   AUTO_COLLECT=0 bash scripts_server/run_huge_ep1_eval1000_chain.sh
+
 Collector for base:
 
    python scripts_server/collect_main_results.py \
