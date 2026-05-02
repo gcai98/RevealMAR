@@ -34,6 +34,10 @@ class RevealMAR(MAR):
         uncertainty_mc_samples=2,
         uncertainty_policy_temperature=1.0,
         candidate_selection_mode='topk',
+        candidate_random_ratio=0.25,
+        candidate_uncertainty_ratio=0.50,
+        candidate_spatial_ratio=0.25,
+        candidate_subset_seed=123,
         budget_mode='soft',
         budget_temperature=1.0,
         budget_score_scale=1.0,
@@ -62,6 +66,10 @@ class RevealMAR(MAR):
         self.uncertainty_mc_samples = uncertainty_mc_samples
         self.uncertainty_policy_temperature = uncertainty_policy_temperature
         self.candidate_selection_mode = candidate_selection_mode
+        self.candidate_random_ratio = candidate_random_ratio
+        self.candidate_uncertainty_ratio = candidate_uncertainty_ratio
+        self.candidate_spatial_ratio = candidate_spatial_ratio
+        self.candidate_subset_seed = candidate_subset_seed
         self.budget_mode = budget_mode
         self.budget_temperature = budget_temperature
         self.budget_score_scale = budget_score_scale
@@ -79,7 +87,7 @@ class RevealMAR(MAR):
             'control_zero', 'control_random', 'control_shuffle',
         }
         valid_sampling_policies = {'baseline', 'planner', 'random', 'confidence', 'entropy'}
-        valid_candidate_selection_modes = {'topk', 'mixed'}
+        valid_candidate_selection_modes = {'topk', 'random', 'uncertainty', 'spatial', 'mixed'}
         valid_ref_target_policies = {'cosine'}
         valid_ref_target_losses = {'feature_mse'}
         if self.pseudo_target_type not in valid_pseudo_target_types:
@@ -100,6 +108,15 @@ class RevealMAR(MAR):
                     self.candidate_selection_mode, sorted(valid_candidate_selection_modes)
                 )
             )
+        candidate_ratios = [
+            float(self.candidate_random_ratio),
+            float(self.candidate_uncertainty_ratio),
+            float(self.candidate_spatial_ratio),
+        ]
+        if any(r < 0.0 for r in candidate_ratios):
+            raise ValueError("Candidate subset ratios must be non-negative")
+        if self.candidate_selection_mode == 'mixed' and sum(candidate_ratios) <= 0.0:
+            raise ValueError("candidate_*_ratio values must sum to > 0 when candidate_selection_mode=mixed")
         if self.ref_target_policy not in valid_ref_target_policies:
             raise ValueError(
                 "Unsupported ref_target_policy {}. Expected one of {}".format(
@@ -209,6 +226,10 @@ class RevealMAR(MAR):
             f"uncertainty_mc_samples={self.uncertainty_mc_samples}, "
             f"uncertainty_policy_temperature={self.uncertainty_policy_temperature}, "
             f"candidate_selection_mode={self.candidate_selection_mode}, "
+            f"candidate_random_ratio={self.candidate_random_ratio}, "
+            f"candidate_uncertainty_ratio={self.candidate_uncertainty_ratio}, "
+            f"candidate_spatial_ratio={self.candidate_spatial_ratio}, "
+            f"candidate_subset_seed={self.candidate_subset_seed}, "
             f"budget_mode={self.budget_mode}, "
             f"budget_temperature={self.budget_temperature}, "
             f"budget_score_scale={self.budget_score_scale}, "
@@ -535,6 +556,10 @@ class RevealMAR(MAR):
             candidate_pool_size,
             masked_coords=masked_coords,
             selection_mode=self.candidate_selection_mode,
+            random_ratio=self.candidate_random_ratio,
+            uncertainty_ratio=self.candidate_uncertainty_ratio,
+            spatial_ratio=self.candidate_spatial_ratio,
+            subset_seed=self.candidate_subset_seed,
         )
 
         candidate_scores = torch.gather(masked_scores, dim=1, index=candidate_indices)
@@ -701,6 +726,53 @@ class RevealMAR(MAR):
             'target_mean': float(values.mean().item()),
             'target_std': float(values.std(unbiased=False).item()),
         }
+
+    def _candidate_subset_debug_summary(self, candidate_indices, masked_coords):
+        if candidate_indices is None or candidate_indices.numel() == 0:
+            return "mode={},candidates=0,random=0,uncertainty=0,spatial=0,unique=0,spatial_spread=0.000000".format(
+                self.candidate_selection_mode
+            )
+        k = int(candidate_indices.size(1))
+        ratio_sum = float(self.candidate_random_ratio + self.candidate_uncertainty_ratio + self.candidate_spatial_ratio)
+        if self.candidate_selection_mode == 'mixed' and ratio_sum > 0.0:
+            random_count = int(round(k * float(self.candidate_random_ratio) / ratio_sum))
+            uncertainty_count = int(round(k * float(self.candidate_uncertainty_ratio) / ratio_sum))
+            spatial_count = max(0, k - random_count - uncertainty_count)
+        elif self.candidate_selection_mode == 'random':
+            random_count, uncertainty_count, spatial_count = k, 0, 0
+        elif self.candidate_selection_mode == 'uncertainty':
+            random_count, uncertainty_count, spatial_count = 0, k, 0
+        elif self.candidate_selection_mode == 'spatial':
+            random_count, uncertainty_count, spatial_count = 0, 0, k
+        else:
+            random_count, uncertainty_count, spatial_count = 0, k, 0
+
+        unique_counts = []
+        spreads = []
+        if masked_coords is not None:
+            for b in range(candidate_indices.size(0)):
+                idx = candidate_indices[b]
+                unique_counts.append(int(torch.unique(idx).numel()))
+                coords = masked_coords[b, idx].float()
+                if coords.numel() == 0:
+                    spreads.append(0.0)
+                else:
+                    rows = coords[:, 0]
+                    cols = coords[:, 1]
+                    spreads.append(float(((rows.max() - rows.min()) + (cols.max() - cols.min())).item() / 2.0))
+        unique_mean = sum(unique_counts) / len(unique_counts) if unique_counts else float(k)
+        spread_mean = sum(spreads) / len(spreads) if spreads else 0.0
+        return (
+            "mode={},candidates={},random={},uncertainty={},spatial={},unique={:.2f},spatial_spread={:.6f}".format(
+                self.candidate_selection_mode,
+                k,
+                random_count,
+                uncertainty_count,
+                spatial_count,
+                unique_mean,
+                spread_mean,
+            )
+        )
 
     def _infer_reference_reveal_count(self, masked_token_count):
         if self.ref_target_horizon > 1:
@@ -985,6 +1057,10 @@ class RevealMAR(MAR):
             self.candidate_pool_size,
             masked_coords=masked_coords,
             selection_mode=self.candidate_selection_mode,
+            random_ratio=self.candidate_random_ratio,
+            uncertainty_ratio=self.candidate_uncertainty_ratio,
+            spatial_ratio=self.candidate_spatial_ratio,
+            subset_seed=self.candidate_subset_seed,
         )
         if self._uses_reference_policy_target():
             pseudo_target = self._compute_reference_policy_pseudo_targets(
@@ -1034,6 +1110,7 @@ class RevealMAR(MAR):
             self._revealmar_fwd_count = getattr(self, '_revealmar_fwd_count', 0) + 1
             if self._revealmar_fwd_count % log_freq == 0 and misc.is_main_process():
                 target_stats = self._candidate_target_stats(pseudo_target, candidate_indices)
+                print('[RevealMAR][candidate-subset] ' + self._candidate_subset_debug_summary(candidate_indices, masked_coords))
                 print(
                     '[RevealMAR] fwd={} total_loss={:.6f} diffloss={:.6f} planner_aux_loss={:.6f} target_mean={:.6f} target_std={:.6f}'.format(
                         self._revealmar_fwd_count,

@@ -36,65 +36,87 @@ def _greedy_spatial_diverse_indices(coords, candidate_count, already_selected_ma
     return diverse
 
 
-def build_candidate_subset(masked_scores, candidate_pool_size, masked_coords=None, selection_mode='topk'):
+def _fill_remaining(chosen, selected_mask, fallback_order, k):
+    for idx in fallback_order:
+        if len(chosen) >= k:
+            break
+        idx = int(idx)
+        if not selected_mask[idx]:
+            selected_mask[idx] = True
+            chosen.append(idx)
+
+
+def build_candidate_subset(
+    masked_scores,
+    candidate_pool_size,
+    masked_coords=None,
+    selection_mode='topk',
+    random_ratio=0.25,
+    uncertainty_ratio=0.50,
+    spatial_ratio=0.25,
+    subset_seed=123,
+):
     """Select candidate masked tokens per sample by planner score or a mixed proposal."""
     assert masked_scores.dim() == 2, "masked_scores must be [bsz, masked_token_count]"
     bsz, masked_token_count = masked_scores.shape
-    if masked_token_count == 0:
+    if masked_token_count == 0 or int(candidate_pool_size) <= 0:
         empty = torch.empty(bsz, 0, device=masked_scores.device, dtype=torch.long)
         return empty
 
     k = min(int(candidate_pool_size), masked_token_count)
     if selection_mode == 'topk' or k <= 1:
         return torch.topk(masked_scores, k=k, dim=-1, largest=True).indices
-    if selection_mode != 'mixed':
+    if selection_mode not in {'random', 'uncertainty', 'spatial', 'mixed'}:
         raise ValueError("Unsupported selection_mode: {}".format(selection_mode))
 
     candidate_indices = torch.empty(bsz, k, device=masked_scores.device, dtype=torch.long)
-    topk_count = min(k, max(1, k // 2))
-    random_count = min(k - topk_count, max(0, k // 4))
-    diverse_count = k - topk_count - random_count
 
     for b in range(bsz):
         scores = masked_scores[b]
         selected_mask = torch.zeros(masked_token_count, device=masked_scores.device, dtype=torch.bool)
         chosen = []
+        scores_safe = torch.nan_to_num(scores.float(), nan=0.0, posinf=0.0, neginf=0.0)
+        seed_scalar = torch.nan_to_num(scores_safe.mean(), nan=0.0, posinf=0.0, neginf=0.0) + float(subset_seed + b)
 
-        top_idx = torch.topk(scores, k=topk_count, dim=-1, largest=True).indices.tolist()
-        for idx in top_idx:
-            if not selected_mask[idx]:
-                selected_mask[idx] = True
-                chosen.append(idx)
-
-        if random_count > 0:
-            seed_scalar = torch.nan_to_num(scores.float().mean(), nan=0.0, posinf=0.0, neginf=0.0)
+        if selection_mode == 'random':
             random_order = _deterministic_pseudo_random_order(
                 masked_token_count, device=masked_scores.device, dtype=scores.dtype, seed_scalar=seed_scalar
             )
-            for idx in random_order.tolist():
-                if len(chosen) >= topk_count + random_count:
-                    break
-                if not selected_mask[idx]:
-                    selected_mask[idx] = True
-                    chosen.append(idx)
+            _fill_remaining(chosen, selected_mask, random_order.tolist(), k)
+        elif selection_mode == 'uncertainty':
+            uncertainty_order = torch.argsort(scores_safe, descending=True)
+            _fill_remaining(chosen, selected_mask, uncertainty_order.tolist(), k)
+        elif selection_mode == 'spatial' and masked_coords is not None:
+            diverse = _greedy_spatial_diverse_indices(masked_coords[b], k, selected_mask.clone())
+            _fill_remaining(chosen, selected_mask, diverse, k)
+        else:
+            ratio_sum = float(random_ratio) + float(uncertainty_ratio) + float(spatial_ratio)
+            if ratio_sum <= 0.0:
+                raise ValueError("Mixed candidate ratios must sum to > 0")
+            random_count = int(round(k * float(random_ratio) / ratio_sum))
+            uncertainty_count = int(round(k * float(uncertainty_ratio) / ratio_sum))
+            spatial_count = max(0, k - random_count - uncertainty_count)
 
-        if diverse_count > 0 and masked_coords is not None:
-            diverse = _greedy_spatial_diverse_indices(masked_coords[b], diverse_count, selected_mask.clone())
-            for idx in diverse:
-                if len(chosen) >= k:
-                    break
-                if not selected_mask[idx]:
-                    selected_mask[idx] = True
-                    chosen.append(idx)
+            uncertainty_order = torch.argsort(scores_safe, descending=True)
+            _fill_remaining(chosen, selected_mask, uncertainty_order.tolist(), min(k, uncertainty_count))
+
+            random_order = _deterministic_pseudo_random_order(
+                masked_token_count, device=masked_scores.device, dtype=scores.dtype, seed_scalar=seed_scalar
+            )
+            _fill_remaining(chosen, selected_mask, random_order.tolist(), min(k, uncertainty_count + random_count))
+
+            if spatial_count > 0 and masked_coords is not None:
+                diverse = _greedy_spatial_diverse_indices(masked_coords[b], spatial_count, selected_mask.clone())
+                _fill_remaining(chosen, selected_mask, diverse, k)
 
         if len(chosen) < k:
-            fallback = torch.argsort(scores, descending=True)
-            for idx in fallback.tolist():
-                if len(chosen) >= k:
-                    break
-                if not selected_mask[idx]:
-                    selected_mask[idx] = True
-                    chosen.append(idx)
+            fallback = torch.argsort(scores_safe, descending=True)
+            _fill_remaining(chosen, selected_mask, fallback.tolist(), k)
+        if len(chosen) < k:
+            random_order = _deterministic_pseudo_random_order(
+                masked_token_count, device=masked_scores.device, dtype=scores.dtype, seed_scalar=seed_scalar + 1.0
+            )
+            _fill_remaining(chosen, selected_mask, random_order.tolist(), k)
 
         candidate_indices[b] = torch.tensor(chosen, device=masked_scores.device, dtype=torch.long)
 

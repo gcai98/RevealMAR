@@ -161,8 +161,16 @@ def get_args_parser():
     parser.add_argument('--uncertainty_policy_temperature', default=1.0, type=float,
                         help='diffusion sampling temperature for confidence/entropy uncertainty policies')
     parser.add_argument('--candidate_selection_mode', default='topk', type=str,
-                        choices=['topk', 'mixed'],
+                        choices=['topk', 'random', 'uncertainty', 'spatial', 'mixed'],
                         help='candidate subset proposal mode for RevealMAR')
+    parser.add_argument('--candidate_random_ratio', default=0.25, type=float,
+                        help='random proposal ratio for mixed candidate subset mode')
+    parser.add_argument('--candidate_uncertainty_ratio', default=0.50, type=float,
+                        help='uncertainty proposal ratio for mixed candidate subset mode')
+    parser.add_argument('--candidate_spatial_ratio', default=0.25, type=float,
+                        help='spatial proposal ratio for mixed candidate subset mode')
+    parser.add_argument('--candidate_subset_seed', default=123, type=int,
+                        help='deterministic seed for candidate subset proposal controls')
     parser.add_argument('--budget_mode', default='soft', type=str,
                         choices=['soft', 'hard'],
                         help='budget mode for RevealMAR')
@@ -300,6 +308,10 @@ def main(args):
         uncertainty_mc_samples=args.uncertainty_mc_samples,
         uncertainty_policy_temperature=args.uncertainty_policy_temperature,
         candidate_selection_mode=args.candidate_selection_mode,
+        candidate_random_ratio=args.candidate_random_ratio,
+        candidate_uncertainty_ratio=args.candidate_uncertainty_ratio,
+        candidate_spatial_ratio=args.candidate_spatial_ratio,
+        candidate_subset_seed=args.candidate_subset_seed,
         budget_mode=args.budget_mode,
         budget_temperature=args.budget_temperature,
         budget_score_scale=args.budget_score_scale,
