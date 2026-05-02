@@ -34,12 +34,18 @@ Server training scripts read these optional environment variables:
    TRAIN_EPOCHS
    WARMUP_EPOCHS
    TRAIN_RUN_NAME
+   TRAIN_MAX_STEPS
+   USE_TORCHRUN
+   NPROC_PER_NODE
 
 Defaults are safe for a 1-epoch validation:
 
    TRAIN_EPOCHS=1
    WARMUP_EPOCHS=1
    TRAIN_RUN_NAME=train_ref_mixed
+   TRAIN_MAX_STEPS=-1
+   USE_TORCHRUN=0
+   NPROC_PER_NODE=1
 
 Use a separate run name for probes so they do not overwrite final outputs.
 
@@ -91,6 +97,11 @@ Override huge training batch size if needed:
 
    TRAIN_BSZ=32 bash scripts_server/run_huge_ep1_eval1000_chain.sh
    TRAIN_BSZ=64 bash scripts_server/run_huge_ep1_eval1000_chain.sh
+
+The ep1 eval1000 chain defaults to TRAIN_MAX_STEPS=200 to keep validation
+bounded. Single-card debug example:
+
+   TRAIN_MAX_STEPS=200 bash scripts_server/run_base_ep1_eval1000_chain.sh
 
 Base:
 
@@ -178,6 +189,10 @@ Huge final:
    AUTO_SHUTDOWN=1 TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_RUN_NAME=train_ref_mixed \
    nohup bash scripts_server/run_huge_train_then_eval.sh \
    > /root/autodl-tmp/outputs/planmar_main/huge_full.nohup.log 2>&1 &
+
+8-card final example:
+
+   USE_TORCHRUN=1 NPROC_PER_NODE=8 TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 bash scripts_server/run_huge_train_then_eval.sh
 
 Final checkpoints are saved to:
 

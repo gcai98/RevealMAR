@@ -19,9 +19,18 @@ echo "TRAIN_RUN_NAME=${TRAIN_RUN_NAME}"
 echo "TRAIN_EPOCHS=${TRAIN_EPOCHS}"
 echo "WARMUP_EPOCHS=${WARMUP_EPOCHS}"
 echo "TRAIN_BSZ=${TRAIN_BSZ}"
+echo "TRAIN_MAX_STEPS=${TRAIN_MAX_STEPS}"
+echo "USE_TORCHRUN=${USE_TORCHRUN}"
+echo "NPROC_PER_NODE=${NPROC_PER_NODE}"
 echo "TRAIN_DIR=${TRAIN_DIR}"
 
-CMD=(python main_revealmar.py
+if [ "${USE_TORCHRUN}" = "1" ]; then
+  LAUNCHER=(torchrun "--nproc_per_node=${NPROC_PER_NODE}")
+else
+  LAUNCHER=(python)
+fi
+
+CMD=("${LAUNCHER[@]}" main_revealmar.py
   --model "${MODEL}"
   --img_size 256
   --vae_path "${VAE_PATH}"
@@ -36,6 +45,7 @@ CMD=(python main_revealmar.py
   --diffusion_batch_mul 1
   --epochs "${TRAIN_EPOCHS}"
   --warmup_epochs "${WARMUP_EPOCHS}"
+  --max_train_steps "${TRAIN_MAX_STEPS}"
   --batch_size "${TRAIN_BSZ}"
   --blr 1.0e-4
   --num_workers 8
@@ -58,7 +68,7 @@ CMD=(python main_revealmar.py
   --dist_url env://)
 
 printf '%q ' "${CMD[@]}" > "${TRAIN_DIR}/run_args.txt"
-write_json_config "${TRAIN_DIR}/config.json" model_name="${MODEL_NAME}" model="${MODEL}" train_run_name="${TRAIN_RUN_NAME}" train_epochs="${TRAIN_EPOCHS}" warmup_epochs="${WARMUP_EPOCHS}" train_bsz="${TRAIN_BSZ}" data_path="${DATA_ROOT}" resume="${PRETRAIN_CKPT}" output_dir="${TRAIN_DIR}" pseudo_target_type=ref_mixed_reveal candidate_selection_mode=mixed planner_loss_weight=1.0 mixed_policy_ratio=0.0
+write_json_config "${TRAIN_DIR}/config.json" model_name="${MODEL_NAME}" model="${MODEL}" train_run_name="${TRAIN_RUN_NAME}" train_epochs="${TRAIN_EPOCHS}" warmup_epochs="${WARMUP_EPOCHS}" train_bsz="${TRAIN_BSZ}" train_max_steps="${TRAIN_MAX_STEPS}" use_torchrun="${USE_TORCHRUN}" nproc_per_node="${NPROC_PER_NODE}" data_path="${DATA_ROOT}" resume="${PRETRAIN_CKPT}" output_dir="${TRAIN_DIR}" pseudo_target_type=ref_mixed_reveal candidate_selection_mode=mixed planner_loss_weight=1.0 mixed_policy_ratio=0.0
 "${CMD[@]}" 2>&1 | tee "${TRAIN_DIR}/train.log" "${LOG_DIR}/${TRAIN_RUN_NAME}.log"
 
 check_path "${TRAIN_DIR}/checkpoint-last.pth" "trained checkpoint"
