@@ -4,6 +4,7 @@ set -x
 
 export TRAIN_EPOCHS=${TRAIN_EPOCHS:-1}
 export WARMUP_EPOCHS=${WARMUP_EPOCHS:-1}
+export TRAIN_BSZ=${TRAIN_BSZ:-64}
 export TRAIN_RUN_NAME=${TRAIN_RUN_NAME:-train_ref_mixed_ep1_chain}
 export EVAL_RUN_NAME=${EVAL_RUN_NAME:-eval_main_ep1_1000}
 export EVAL_NUM_IMAGES=${EVAL_NUM_IMAGES:-1000}

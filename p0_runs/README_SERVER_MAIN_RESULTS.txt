@@ -79,6 +79,19 @@ This validates the full train+eval chain before expensive final training. It
 trains for 1 epoch, then evaluates baseline, confidence, entropy, and planner
 at num_iter=64,128,256 with 1000 generated images per run.
 
+The chain order is:
+
+   training -> evaluation -> auto collection
+
+Huge training batch size defaults to 64 through TRAIN_BSZ. Evaluation batch
+size remains controlled separately by EVAL_BSZ and defaults to 32 in the ep1
+eval1000 chain to reduce OOM risk.
+
+Override huge training batch size if needed:
+
+   TRAIN_BSZ=32 bash scripts_server/run_huge_ep1_eval1000_chain.sh
+   TRAIN_BSZ=64 bash scripts_server/run_huge_ep1_eval1000_chain.sh
+
 Base:
 
    nohup bash scripts_server/run_base_ep1_eval1000_chain.sh \
