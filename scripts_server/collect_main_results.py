@@ -10,6 +10,7 @@ DEFAULT_ROOT = "/root/autodl-tmp/outputs/planmar_main"
 MODELS = ("base", "large", "huge")
 MODEL_SET = set(MODELS)
 POLICIES = ("baseline", "confidence", "entropy", "planner")
+POLICY_SET = set(POLICIES)
 NUM_ITERS = (64, 128, 256)
 
 FIELDS = [
@@ -60,6 +61,21 @@ def parse_models(models_arg):
     return models
 
 
+def parse_policies(policies_arg):
+    if policies_arg.strip().lower() == "all":
+        return list(POLICIES)
+    policies = [item.strip().lower() for item in policies_arg.split(",") if item.strip()]
+    if not policies:
+        raise ValueError("--policies must be 'all' or a comma-separated list")
+    invalid = [name for name in policies if name not in POLICY_SET]
+    if invalid:
+        raise ValueError("Invalid policy name(s): {}. Expected one of: {}".format(
+            ", ".join(invalid),
+            ", ".join(POLICIES),
+        ))
+    return policies
+
+
 def output_name(prefix, base_name):
     return base_name if not prefix else f"{prefix}_{base_name}"
 
@@ -97,10 +113,12 @@ def parse_summary_line(text):
         "budget_max": "",
         "conc_mean": "",
         "score_std_mean": "",
+        "_summary_found": "",
     }
     lines = [line for line in text.splitlines() if "[RevealMAR][sampling-summary]" in line]
     if not lines:
         return out
+    out["_summary_found"] = "1"
     line = lines[-1]
     payload = line.split("]", 2)[-1]
     pairs = dict(re.findall(r"([A-Za-z0-9_]+)=([^,\s]+)", payload))
@@ -120,17 +138,21 @@ def parse_summary_line(text):
     return out
 
 
-def status_for(text, fid):
+def status_for(text, policy, fid, inception, summary):
     failed = any(marker in text for marker in ("Traceback", "RuntimeError", "CUDA out of memory"))
     planner_missing = "planner_head" in text and (
         "Resume missing model keys" in text or "EMA missing keys" in text
     )
     if failed:
         return "failed"
+    if policy == "baseline" and planner_missing and fid and inception:
+        return "ok_baseline_expected_missing_planner"
     if planner_missing:
         return "planner_head_missing"
-    if not fid:
+    if not fid or not inception:
         return "no_metrics"
+    if policy == "planner" and not summary.get("_summary_found"):
+        return "no_sampling_summary"
     return "ok"
 
 
@@ -143,14 +165,14 @@ def find_log(root, model_name, policy, num_iter, eval_name):
     return run_dir, log_path
 
 
-def collect(root, models, eval_name, skip_missing_models=False):
+def collect(root, models, policies, eval_name, skip_missing_models=False):
     rows = []
     for model_name in models:
         model_root = root / model_name
         if skip_missing_models and not model_root.exists():
             print(f"[WARN] Skipping missing model directory: {model_root}")
             continue
-        for policy in POLICIES:
+        for policy in policies:
             for num_iter in NUM_ITERS:
                 run_dir, log_path = find_log(root, model_name, policy, num_iter, eval_name)
                 text = read_text(log_path)
@@ -170,7 +192,7 @@ def collect(root, models, eval_name, skip_missing_models=False):
                     "budget_max": summary["budget_max"],
                     "conc_mean": summary["conc_mean"],
                     "score_std_mean": summary["score_std_mean"],
-                    "status": status_for(text, fid),
+                    "status": status_for(text, policy, fid, inception, summary),
                     "run_dir": str(run_dir),
                     "log_path": str(log_path),
                 }
@@ -213,18 +235,21 @@ def main():
     parser.add_argument("--skip_missing_models", action="store_true")
     parser.add_argument("--output_prefix", default="")
     parser.add_argument("--eval_name", default="eval_main")
+    parser.add_argument("--policies", default="all")
     args = parser.parse_args()
 
     root = Path(args.root)
     models = parse_models(args.models)
+    policies = parse_policies(args.policies)
 
     print(f"[collect_main_results] root={root}")
     print(f"[collect_main_results] models={','.join(models)}")
+    print(f"[collect_main_results] policies={','.join(policies)}")
     print(f"[collect_main_results] eval_name={args.eval_name}")
     print(f"[collect_main_results] skip_missing_models={args.skip_missing_models}")
     print(f"[collect_main_results] output_prefix={args.output_prefix}")
 
-    rows = collect(root, models, args.eval_name, args.skip_missing_models)
+    rows = collect(root, models, policies, args.eval_name, args.skip_missing_models)
     summary_csv = root / output_name(args.output_prefix, "main_results_summary.csv")
     summary_json = root / output_name(args.output_prefix, "main_results_summary.json")
     pareto_csv = root / output_name(args.output_prefix, "pareto_data.csv")
@@ -243,7 +268,8 @@ def main():
     print(f"JSON saved to {summary_json}")
     print(f"Pareto CSV saved to {pareto_csv}")
 
-    bad = [row for row in rows if row["status"] != "ok"]
+    ok_statuses = {"ok", "ok_baseline_expected_missing_planner"}
+    bad = [row for row in rows if row["status"] not in ok_statuses]
     if bad:
         counts = {}
         for row in bad:

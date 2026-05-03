@@ -132,6 +132,16 @@ Collector for base:
      --output_prefix base_ep1_1000 \
      --eval_name eval_main_ep1_1000
 
+Recommended baseline/planner-only main-result collector for base:
+
+   python scripts_server/collect_main_results.py \
+     --root /root/autodl-tmp/outputs/planmar_main \
+     --models base \
+     --skip_missing_models \
+     --output_prefix base_ep1_baseline_planner \
+     --eval_name eval_main_ep1_1000 \
+     --policies baseline,planner
+
 Collector for large:
 
    python scripts_server/collect_main_results.py \
