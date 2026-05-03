@@ -275,6 +275,58 @@ Eval-only after training already finished:
    bash scripts_server/eval_base_parallel_6points.sh
    bash scripts_server/eval_large_parallel_6points.sh
 
+Scheme A on 7-GPU RTX 5090 Server
+---------------------------------
+
+If an 8-GPU RTX 5090 server is unavailable, Scheme A can run safely on a
+7-GPU server.
+
+Training should use:
+
+   USE_TORCHRUN=1 NPROC_PER_NODE=7
+
+Parallel eval should still use six jobs:
+
+   EVAL_GPU_IDS=0,1,2,3,4,5
+
+GPU 6 is intentionally left idle/reserved during eval. This is expected because
+Scheme A has six eval points: baseline/planner x 64/128/256.
+
+Because NPROC_PER_NODE changes from 8 to 7, the effective global training batch
+size changes if TRAIN_BSZ is unchanged. For the time-constrained Scheme-A run,
+keep TRAIN_BSZ unchanged for stability unless OOM or training instability
+occurs. Report the actual GPU count and effective batch size in the
+appendix/runtime diagnostics.
+
+7-GPU base preflight:
+
+   USE_TORCHRUN=1 NPROC_PER_NODE=7 \
+   TRAIN_EPOCHS=1 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=200 TRAIN_RUN_NAME=train_ref_mixed_preflight \
+   MIXED_POLICY_RATIO=0.0 \
+   EVAL_RUN_NAME=eval_preflight EVAL_NUM_IMAGES=1000 EVAL_BSZ=64 EVAL_POLICIES=baseline,planner EVAL_NUM_ITERS=64,128,256 EVAL_GPU_IDS=0,1,2,3,4,5 \
+   nohup bash scripts_server/run_base_train_then_parallel_eval.sh \
+   > /root/autodl-tmp/outputs/planmar_main/base_schemeA_7gpu_preflight.nohup.log 2>&1 &
+
+7-GPU formal base:
+
+   AUTO_SHUTDOWN=1 \
+   USE_TORCHRUN=1 NPROC_PER_NODE=7 \
+   TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 TRAIN_RUN_NAME=train_ref_mixed \
+   MIXED_POLICY_RATIO=0.0 \
+   EVAL_RUN_NAME=eval_main EVAL_NUM_IMAGES=50000 EVAL_BSZ=128 EVAL_POLICIES=baseline,planner EVAL_NUM_ITERS=64,128,256 EVAL_GPU_IDS=0,1,2,3,4,5 \
+   nohup bash scripts_server/run_base_train_then_parallel_eval.sh \
+   > /root/autodl-tmp/outputs/planmar_main/base_schemeA_7gpu.nohup.log 2>&1 &
+
+7-GPU formal large:
+
+   AUTO_SHUTDOWN=1 \
+   USE_TORCHRUN=1 NPROC_PER_NODE=7 \
+   TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 TRAIN_RUN_NAME=train_ref_mixed \
+   MIXED_POLICY_RATIO=0.0 \
+   EVAL_RUN_NAME=eval_main EVAL_NUM_IMAGES=50000 EVAL_BSZ=128 EVAL_POLICIES=baseline,planner EVAL_NUM_ITERS=64,128,256 EVAL_GPU_IDS=0,1,2,3,4,5 \
+   nohup bash scripts_server/run_large_train_then_parallel_eval.sh \
+   > /root/autodl-tmp/outputs/planmar_main/large_schemeA_7gpu.nohup.log 2>&1 &
+
 AutoDL Auto-Shutdown
 --------------------
 
