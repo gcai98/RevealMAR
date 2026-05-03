@@ -4,22 +4,23 @@ Final PlanMAR-S Runbook
 Recommended Workflow
 --------------------
 
+Do not use root-level run scripts. Final experiments should be launched from
+scripts_server/. Linux preflight should be launched from scripts_linux/.
+Windows local debugging, if needed, should use scripts_win/.
+
 1. Local Windows smoke:
 
-   run_smoke_health_check.bat
+   scripts_win/run_main_results.bat
 
 2. Linux cheap preflight:
 
    bash scripts_linux/run_linux_preflight.sh
 
-3. Only after preflight passes, run paper-scale or extended experiments:
+3. Only after preflight passes, run the server workflow for one model per server:
 
-   bash scripts_linux/run_main_results.sh
-   bash scripts_linux/run_budget_calibration.sh
-   bash scripts_linux/run_oracle_mismatch_ref_targets.sh
-   bash scripts_linux/run_mixed_policy_ablation.sh
-   bash scripts_linux/run_same_parameter_control.sh
-   bash scripts_linux/run_early_step_intervention.sh
+   bash scripts_server/run_base_train_then_eval.sh
+   bash scripts_server/run_large_train_then_eval.sh
+   bash scripts_server/run_huge_train_then_eval.sh
 
 Important Notes
 ---------------
