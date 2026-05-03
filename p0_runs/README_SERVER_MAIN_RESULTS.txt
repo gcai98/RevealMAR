@@ -224,6 +224,57 @@ Do not mix probe and final checkpoints. When evaluating a probe, pass
 TRAIN_RUN_NAME=train_ref_mixed_ep1_probe to the eval script; when evaluating
 final results, use TRAIN_RUN_NAME=train_ref_mixed.
 
+Scheme A Formal Run: Base + Large, Baseline/Planner Only
+--------------------------------------------------------
+
+Scheme A is the current formal main-result plan:
+
+   models: base, large
+   policies: baseline, planner
+   num_iter: 64,128,256
+   num_images: 50000
+
+Do not include huge, confidence, entropy, oracle mismatch, same-parameter, or
+mixed-policy full-FID runs in the first Scheme A formal run.
+
+The parallel eval scripts launch one job per policy/step pair:
+
+   baseline_iter64
+   baseline_iter128
+   baseline_iter256
+   planner_iter64
+   planner_iter128
+   planner_iter256
+
+By default these jobs use EVAL_GPU_IDS=0,1,2,3,4,5. Baseline eval uses the
+official pretrained MAR checkpoint, while planner eval uses the trained
+PlanMAR-S checkpoint at ${OUTPUT_ROOT}/{model}/${TRAIN_RUN_NAME}.
+
+Base Scheme A:
+
+   AUTO_SHUTDOWN=1 \
+   USE_TORCHRUN=1 NPROC_PER_NODE=8 \
+   TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 TRAIN_RUN_NAME=train_ref_mixed \
+   MIXED_POLICY_RATIO=0.0 \
+   EVAL_RUN_NAME=eval_main EVAL_NUM_IMAGES=50000 EVAL_BSZ=256 EVAL_POLICIES=baseline,planner EVAL_NUM_ITERS=64,128,256 EVAL_GPU_IDS=0,1,2,3,4,5 \
+   nohup bash scripts_server/run_base_train_then_parallel_eval.sh \
+   > /root/autodl-tmp/outputs/planmar_main/base_schemeA.nohup.log 2>&1 &
+
+Large Scheme A:
+
+   AUTO_SHUTDOWN=1 \
+   USE_TORCHRUN=1 NPROC_PER_NODE=8 \
+   TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 TRAIN_RUN_NAME=train_ref_mixed \
+   MIXED_POLICY_RATIO=0.0 \
+   EVAL_RUN_NAME=eval_main EVAL_NUM_IMAGES=50000 EVAL_BSZ=256 EVAL_POLICIES=baseline,planner EVAL_NUM_ITERS=64,128,256 EVAL_GPU_IDS=0,1,2,3,4,5 \
+   nohup bash scripts_server/run_large_train_then_parallel_eval.sh \
+   > /root/autodl-tmp/outputs/planmar_main/large_schemeA.nohup.log 2>&1 &
+
+Eval-only after training already finished:
+
+   bash scripts_server/eval_base_parallel_6points.sh
+   bash scripts_server/eval_large_parallel_6points.sh
+
 AutoDL Auto-Shutdown
 --------------------
 
