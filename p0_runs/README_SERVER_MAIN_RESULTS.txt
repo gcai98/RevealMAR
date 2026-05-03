@@ -23,8 +23,9 @@ Recommended Order
    bash scripts_server/run_huge_train_then_eval.sh
 
 The top-level scripts run readiness checks, train ref_mixed_reveal for
-TRAIN_EPOCHS epochs, then evaluate baseline, confidence, entropy, and planner
-at 64, 128, and 256 decoding iterations.
+TRAIN_EPOCHS epochs, then evaluate the policies listed in EVAL_POLICIES at 64,
+128, and 256 decoding iterations. Formal main results default to baseline and
+planner only.
 
 Training Run Names
 ------------------
@@ -37,6 +38,7 @@ Server training scripts read these optional environment variables:
    TRAIN_MAX_STEPS
    USE_TORCHRUN
    NPROC_PER_NODE
+   MIXED_POLICY_RATIO
 
 Defaults are safe for a 1-epoch validation:
 
@@ -46,6 +48,7 @@ Defaults are safe for a 1-epoch validation:
    TRAIN_MAX_STEPS=-1
    USE_TORCHRUN=0
    NPROC_PER_NODE=1
+   MIXED_POLICY_RATIO=0.0
 
 Use a separate run name for probes so they do not overwrite final outputs.
 
@@ -82,8 +85,8 @@ Probe checkpoints are saved to:
 ----------------------------------------------
 
 This validates the full train+eval chain before expensive final training. It
-trains for 1 epoch, then evaluates baseline, confidence, entropy, and planner
-at num_iter=64,128,256 with 1000 generated images per run.
+trains for 1 epoch, then evaluates the policies listed in EVAL_POLICIES at
+num_iter=64,128,256 with 1000 generated images per run.
 
 The chain order is:
 
@@ -182,27 +185,36 @@ Use 10/1 first. The 400/100 setting was the original MAR-style long training
 setting and is not recommended for the first PlanMAR-S fine-tuning run.
 Consider 20/2 only if 10 epochs shows promising trends but is insufficient.
 
+Formal main results default to EVAL_POLICIES=baseline,planner. Confidence and
+entropy are not part of the default main result because they are slow and
+currently require cfg=1.0.
+
+Mixed-policy exposure is optional. The default is MIXED_POLICY_RATIO=0.0. To
+run an optional mixed-policy ablation, set a ratio such as:
+
+   MIXED_POLICY_RATIO=0.25 bash scripts_server/run_base_train_then_eval.sh
+
 Base final:
 
-   AUTO_SHUTDOWN=1 TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_RUN_NAME=train_ref_mixed \
+   AUTO_SHUTDOWN=1 EVAL_POLICIES=baseline,planner TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 TRAIN_RUN_NAME=train_ref_mixed \
    nohup bash scripts_server/run_base_train_then_eval.sh \
    > /root/autodl-tmp/outputs/planmar_main/base_full.nohup.log 2>&1 &
 
 Large final:
 
-   AUTO_SHUTDOWN=1 TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_RUN_NAME=train_ref_mixed \
+   AUTO_SHUTDOWN=1 EVAL_POLICIES=baseline,planner TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 TRAIN_RUN_NAME=train_ref_mixed \
    nohup bash scripts_server/run_large_train_then_eval.sh \
    > /root/autodl-tmp/outputs/planmar_main/large_full.nohup.log 2>&1 &
 
 Huge final:
 
-   AUTO_SHUTDOWN=1 TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_RUN_NAME=train_ref_mixed \
+   AUTO_SHUTDOWN=1 EVAL_POLICIES=baseline,planner TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 TRAIN_RUN_NAME=train_ref_mixed \
    nohup bash scripts_server/run_huge_train_then_eval.sh \
    > /root/autodl-tmp/outputs/planmar_main/huge_full.nohup.log 2>&1 &
 
 8-card final example:
 
-   USE_TORCHRUN=1 NPROC_PER_NODE=8 TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 bash scripts_server/run_huge_train_then_eval.sh
+   USE_TORCHRUN=1 NPROC_PER_NODE=8 EVAL_POLICIES=baseline,planner TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 bash scripts_server/run_huge_train_then_eval.sh
 
 Final checkpoints are saved to:
 
