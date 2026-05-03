@@ -275,6 +275,67 @@ Eval-only after training already finished:
    bash scripts_server/eval_base_parallel_6points.sh
    bash scripts_server/eval_large_parallel_6points.sh
 
+Manuscript-Priority Run: Minimal Main-Paper Results
+---------------------------------------------------
+
+This is the recommended first formal run when time is limited. It produces the
+minimal main-paper result package:
+
+   Table 1: Main Results at 256 steps
+   Table 2: Quality-Efficiency Trade-off at 128 and 256 steps
+   Budget sanity from planner logs
+
+It runs:
+
+   models: base, large
+   policies: baseline, planner
+   num_iter: 128,256
+   num_images: 50000
+
+It skips 64-step eval, confidence/entropy, huge, oracle mismatch,
+same-parameter controls, mixed-policy full-FID, and other full-FID ablations.
+
+The main-paper eval scripts use EVAL_BSZ=128 by default because 7x5090
+preflight showed VAE decode OOM risk at EVAL_BSZ=256.
+
+7x5090 base main-paper run:
+
+   AUTO_SHUTDOWN=1 \
+   USE_TORCHRUN=1 NPROC_PER_NODE=7 \
+   TRAIN_BSZ=96 \
+   TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 TRAIN_RUN_NAME=train_ref_mixed \
+   MIXED_POLICY_RATIO=0.0 \
+   EVAL_RUN_NAME=eval_mainpaper EVAL_NUM_IMAGES=50000 EVAL_BSZ=128 EVAL_POLICIES=baseline,planner EVAL_NUM_ITERS=128,256 EVAL_GPU_IDS=0,1,2,3 \
+   nohup bash scripts_server/run_base_train_then_mainpaper_eval.sh \
+   > /root/autodl-tmp/outputs/planmar_main/base_mainpaper_7gpu.log 2>&1 &
+
+7x5090 large main-paper run:
+
+   AUTO_SHUTDOWN=1 \
+   USE_TORCHRUN=1 NPROC_PER_NODE=7 \
+   TRAIN_BSZ=96 \
+   TRAIN_EPOCHS=10 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 TRAIN_RUN_NAME=train_ref_mixed \
+   MIXED_POLICY_RATIO=0.0 \
+   EVAL_RUN_NAME=eval_mainpaper EVAL_NUM_IMAGES=50000 EVAL_BSZ=128 EVAL_POLICIES=baseline,planner EVAL_NUM_ITERS=128,256 EVAL_GPU_IDS=0,1,2,3 \
+   nohup bash scripts_server/run_large_train_then_mainpaper_eval.sh \
+   > /root/autodl-tmp/outputs/planmar_main/large_mainpaper_7gpu.log 2>&1 &
+
+7x5090 base main-paper preflight:
+
+   USE_TORCHRUN=1 NPROC_PER_NODE=7 \
+   TRAIN_BSZ=96 \
+   TRAIN_EPOCHS=1 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=200 TRAIN_RUN_NAME=train_ref_mixed_preflight \
+   MIXED_POLICY_RATIO=0.0 \
+   EVAL_RUN_NAME=eval_mainpaper_preflight EVAL_NUM_IMAGES=1000 EVAL_BSZ=128 EVAL_POLICIES=baseline,planner EVAL_NUM_ITERS=128,256 EVAL_GPU_IDS=0,1,2,3 \
+   nohup bash scripts_server/run_base_train_then_mainpaper_eval.sh \
+   > /root/autodl-tmp/outputs/planmar_main/base_mainpaper_preflight_7gpu.log 2>&1 &
+
+Surrogate validity and reveal trajectory are separate small-scale mechanism
+experiments. Do not run them inside the 50k main train/eval wrapper.
+
+   Surrogate Validity: run eval_surrogate_validity.py or the corresponding script on Base only.
+   Reveal Trajectory: run eval_reveal_trajectory.py or the corresponding script on Base only.
+
 Scheme A on 7-GPU RTX 5090 Server
 ---------------------------------
 
