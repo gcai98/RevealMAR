@@ -68,3 +68,23 @@ python scripts_server/collect_main_results.py \
   --eval_name eval_mainpaper \
   --policies baseline,planner
 ```
+
+## Expected Outputs
+
+The formal run writes one directory per policy and decoding-step setting under:
+
+```text
+/path/to/output/planmar_main/base/eval_mainpaper/
+```
+
+Each run directory contains:
+
+- `eval.log`
+- `run_args.txt`
+- `config.json`
+
+The collector writes:
+
+- `base_mainpaper_main_results_summary.csv`
+- `base_mainpaper_main_results_summary.json`
+- `base_mainpaper_pareto_data.csv`

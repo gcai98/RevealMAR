@@ -24,8 +24,6 @@ wandb/
 tensorboard/
 
 # Experiment outputs
-p0_runs/*/
-p0_runs/outputs/
 outputs/
 output_dir/
 checkpoints/
@@ -48,11 +46,6 @@ samples/
 *.tmp
 *.swp
 .nfs*
-
-# Keep P0 documentation tracked
-!p0_runs/
-!p0_runs/*.txt
-!p0_runs/README_*.txt
 
 # OS metadata
 .DS_Store
