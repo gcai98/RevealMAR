@@ -1,19 +1,4 @@
-'''
-models/difficulty.py
-
-这里专门放 difficulty 相关逻辑。
-
-建议内容：
-
-compute_uncertainty(...)
-compute_instability(...)
-compute_local_inconsistency(...)
-compute_cond_inconsistency(...)
-compute_difficulty(...)
-compute_gating_score(...)
-
-这样你后面做 ablation 会非常方便，因为 difficulty / gating 是你论文的一个主模块。
-'''
+﻿"""Difficulty-score helpers used by optional diagnostics and ablations."""
 import torch
 
 from util.aura_utils import reduce_feature_dim, safe_normalize
@@ -81,3 +66,4 @@ def compute_gating_score(difficulty, accept_score=None, gate_tau=0.5, uncertaint
     if uncertainty is None:
         uncertainty = torch.zeros_like(difficulty)
     return accept_score - difficulty - 0.5 * safe_normalize(uncertainty) - gate_tau
+

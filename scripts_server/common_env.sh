@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 
-CODE_DIR=${CODE_DIR:-/root/autodl-tmp/RevealMAR-revealmar-dev}
-DATA_ROOT=${DATA_ROOT:-/root/autodl-tmp/imagenet/imagenet1k_imagefolder_full}
-PRETRAIN_ROOT=${PRETRAIN_ROOT:-/root/autodl-tmp/pretrained_models}
-OUTPUT_ROOT=${OUTPUT_ROOT:-/root/autodl-tmp/outputs/planmar_main}
+CODE_DIR=${CODE_DIR:-/path/to/revealmar}
+DATA_ROOT=${DATA_ROOT:-/path/to/imagenet}
+PRETRAIN_ROOT=${PRETRAIN_ROOT:-/path/to/pretrained_models}
+OUTPUT_ROOT=${OUTPUT_ROOT:-/path/to/output/planmar_main}
 VAE_PATH=${VAE_PATH:-${PRETRAIN_ROOT}/vae/kl16.ckpt}
 
 MAR_BASE_CKPT=${MAR_BASE_CKPT:-${PRETRAIN_ROOT}/mar/mar_base}
 MAR_LARGE_CKPT=${MAR_LARGE_CKPT:-${PRETRAIN_ROOT}/mar/mar_large}
 MAR_HUGE_CKPT=${MAR_HUGE_CKPT:-${PRETRAIN_ROOT}/mar/mar_huge}
 
-CONDA_SH=${CONDA_SH:-/root/miniconda3/etc/profile.d/conda.sh}
+CONDA_SH=${CONDA_SH:-/path/to/miniconda3/etc/profile.d/conda.sh}
 CONDA_ENV=${CONDA_ENV:-revealmar}
 
 TRAIN_EPOCHS=${TRAIN_EPOCHS:-1}

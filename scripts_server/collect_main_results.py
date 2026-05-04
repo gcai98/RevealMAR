@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 
-DEFAULT_ROOT = "/root/autodl-tmp/outputs/planmar_main"
+DEFAULT_ROOT = "/path/to/output/planmar_main"
 MODELS = ("base", "large", "huge")
 MODEL_SET = set(MODELS)
 POLICIES = ("baseline", "confidence", "entropy", "planner")

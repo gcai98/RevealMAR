@@ -2,10 +2,12 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.ipynb_checkpoints/
 .pyc_tmp/
 .pycache_tmp/
 .pycache_prefix/
 .pycache_check_new/
+.pycache_check*/
 .pytest_cache/
 
 # Checkpoints and model weights
@@ -16,18 +18,36 @@ __pycache__/
 
 # Logs and TensorBoard
 *.log
+nohup.out
 events.out.tfevents.*
+wandb/
+tensorboard/
 
 # Experiment outputs
 p0_runs/*/
+p0_runs/outputs/
 outputs/
 output_dir/
+checkpoints/
 generated/
+generated_samples/
+fid_samples/
 samples/
 *.png
 *.jpg
 *.jpeg
 *.webp
+*.npz
+!fid_stats/adm_in256_stats.npz
+
+# Local archives and temporary files
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.tmp
+*.swp
+.nfs*
 
 # Keep P0 documentation tracked
 !p0_runs/

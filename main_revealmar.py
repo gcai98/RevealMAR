@@ -218,9 +218,9 @@ def get_args_parser():
     parser.add_argument('--early_intervention_steps', type=int, default=0,
                         help='Number of initial planner decoding steps to replace with intervention policy')
 
-    # 添加GPU内存日志参数
+    # Optional CUDA memory diagnostics.
     parser.add_argument('--log_gpu_mem', action='store_true',
-                        help='Log CUDA memory peak for renting GPU decision')
+                        help='Log CUDA memory peak for diagnostics')
 
     parser.add_argument('--log_gpu_mem_freq', default=50, type=int,
                         help='Log CUDA memory every N iterations/steps')
