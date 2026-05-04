@@ -62,7 +62,7 @@ Notes:
 - This is the verified formal server workflow.
 - `EVAL_NUM_ITERS=128,256` restricts evaluation to the main-paper four points.
 - The evaluation script name contains `6points` for historical compatibility; `EVAL_NUM_ITERS` controls which decoding steps are actually evaluated.
-- The formal minimal reproduction excludes 64-step evaluation, confidence/entropy full evaluation, Huge, ablations, and mechanism experiments.
+- The formal minimal reproduction uses only Base baseline/planner evaluation at 128 and 256 decoding steps.
 - Large can be run analogously using `train_large_ref_mixed.sh` and the same environment, but it is optional and compute expensive.
 - Use `NPROC_PER_NODE=7` instead of `8` on a seven-GPU server.
 
@@ -94,7 +94,3 @@ Expected outputs:
 - `<OUTPUT_ROOT>/base_mainpaper_main_results_summary.json`
 - `<OUTPUT_ROOT>/base_mainpaper_pareto_data.csv`
 - Per-run `eval.log`, `run_args.txt`, and `config.json` files under the selected output root.
-
-## Archived Material
-
-Optional, small-scale, platform-specific, mechanism, visualization, ablation, and debug/probe scripts are archived under `scripts_archive/`. They are not part of the minimal formal reproduction workflow.

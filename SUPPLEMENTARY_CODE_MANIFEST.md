@@ -27,22 +27,9 @@ Only these scripts are active in the release workflow:
 
 The verified command sets `EVAL_POLICIES=baseline,planner`, `EVAL_NUM_ITERS=128,256`, `EVAL_BSZ=128`, `USE_TORCHRUN=1`, and `NPROC_PER_NODE` to the available GPU count.
 
-## Archived or Excluded
+## Excluded Generated Artifacts
 
-The following are archived under `scripts_archive/` and are not part of the active formal workflow:
-
-- `scripts_win/`
-- `scripts_linux/`
-- legacy `scripts/`
-- optional `scripts_server` wrappers
-- mechanism experiment scripts
-- ablation scripts
-- visualization scripts
-- debug, probe, and preflight scripts
-- old P0 runbook files
-- cleanup and checkpoint-conversion helper tools
-
-Generated outputs, checkpoints, logs, samples, local archives, cache directories, and server temporary files are excluded by `.gitignore`.
+Generated outputs, checkpoints, logs, samples, local archives, cache directories, and server temporary files are excluded from the final supplementary package.
 
 ## External Assets Not Included
 
