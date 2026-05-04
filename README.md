@@ -1,6 +1,8 @@
-# PlanMAR-S / RevealMAR
+# PlanMAR-S
 
 PlanMAR-S extends masked autoregressive image generation with a lightweight planner for reveal-set selection. During training, the planner receives a one-step reference-policy-conditioned mixed-reveal pseudo utility target. During inference, the learned planner ranks currently masked latent tokens and selects the next reveal set under a score-derived soft budget. The original MAR sampling path remains available as the baseline.
+
+![PlanMAR-S overview](figs/planmar_overview.jpg)
 
 This release focuses on the formal server-side main-result reproduction workflow.
 
@@ -8,21 +10,14 @@ This release focuses on the formal server-side main-result reproduction workflow
 
 ```bash
 conda env create -f environment.yaml
-conda activate revealmar
+conda activate <environment-name>
 ```
 
 Install a PyTorch/CUDA build appropriate for the target multi-GPU server.
 
-## Required External Assets
+### ImageNet-1K
 
-External assets are not included:
-
-- ImageNet-1K in image-folder format.
-- Pretrained MAR checkpoints, for example `/path/to/pretrained_models/mar/mar_base/checkpoint-last.pth`.
-- KL-16 VAE checkpoint, for example `/path/to/pretrained_models/vae/kl16.ckpt`.
-- ImageNet FID/Inception statistics. The tracked `fid_stats/adm_in256_stats.npz` file is kept if permitted by the release policy.
-
-Expected ImageNet layout:
+The formal experiments use ImageNet-1K in image-folder format. The expected layout is:
 
 ```text
 /path/to/imagenet/
@@ -30,12 +25,63 @@ Expected ImageNet layout:
   val/
 ```
 
+ImageNet access links:
+
+- Official ImageNet download page: https://www.image-net.org/download.php
+
+Please follow the corresponding dataset license and access requirements.
+
+### Pretrained MAR Checkpoints
+
+Pretrained MAR checkpoints should be placed under a directory such as:
+
+```text
+/path/to/pretrained_models/
+  mar/
+    mar_base/
+      checkpoint-last.pth
+```
+
+The original MAR repository provides instructions and pretrained model references:
+
+```text
+https://github.com/LTH14/mar
+```
+
+### KL-16 VAE Checkpoint
+
+The KL-16 VAE checkpoint should be placed under a directory such as:
+
+```text
+/path/to/pretrained_models/
+  vae/
+    kl16.ckpt
+```
+
+A KL-16 checkpoint can be downloaded from:
+
+```text
+https://www.dropbox.com/scl/fi/hhmuvaiacrarfg28qxhwz/kl16.ckpt?rlkey=l44xipsezc8atcffdp4q7mwmh&dl=0
+```
+
+If downloading from the command line, users may need to change `dl=0` to `dl=1` depending on the download tool.
+
+### FID / Inception Statistics
+
+The tracked file
+
+```text
+fid_stats/adm_in256_stats.npz
+```
+
+is used for ImageNet 256×256 FID evaluation if permitted by the release policy. Otherwise, prepare the corresponding ImageNet 256×256 statistics file and place it under `fid_stats/`.
+
 ## Configure Server Paths
 
 Edit `scripts_server/common_env.sh` or override these variables:
 
 ```bash
-export CODE_DIR=/path/to/revealmar
+export CODE_DIR=/path/to/planmar-s
 export DATA_ROOT=/path/to/imagenet
 export PRETRAIN_ROOT=/path/to/pretrained_models
 export OUTPUT_ROOT=/path/to/output/planmar_main
@@ -94,3 +140,21 @@ Expected outputs:
 - `<OUTPUT_ROOT>/base_mainpaper_main_results_summary.json`
 - `<OUTPUT_ROOT>/base_mainpaper_pareto_data.csv`
 - Per-run `eval.log`, `run_args.txt`, and `config.json` files under the selected output root.
+
+## Scope of This Release
+
+This release focuses on reproducing the formal main-result workflow. Optional mechanism experiments, debug/probe scripts, platform-specific runners, and historical ablation scripts are not part of this minimal release package.
+
+## Acknowledgements
+
+This implementation builds on the official MAR codebase:
+
+- `LTH14/mar`: [https://github.com/LTH14/mar](https://github.com/LTH14/mar?utm_source=chatgpt.com)
+
+We thank the MAR authors for releasing their PyTorch implementation, pretrained checkpoints, and evaluation framework.
+
+## License
+
+This codebase includes modifications built on top of the official MAR implementation, which is released under the MIT License. This repository follows the same open-source license unless otherwise noted. Please see the `LICENSE` file for details.
+
+External assets are subject to their own licenses and terms of use, including ImageNet-1K, pretrained MAR checkpoints, the KL-16 VAE checkpoint, and metric backend weights. Users are responsible for obtaining these assets and complying with their respective terms.
