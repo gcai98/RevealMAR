@@ -15,6 +15,10 @@ conda activate <environment-name>
 
 Install a PyTorch/CUDA build appropriate for the target multi-GPU server.
 
+## Required External Assets
+
+External assets are not included in this repository.
+
 ### ImageNet-1K
 
 The formal experiments use ImageNet-1K in image-folder format. The expected layout is:
@@ -25,7 +29,7 @@ The formal experiments use ImageNet-1K in image-folder format. The expected layo
   val/
 ```
 
-ImageNet access links:
+ImageNet access link:
 
 - Official ImageNet download page: https://www.image-net.org/download.php
 
@@ -39,6 +43,8 @@ Pretrained MAR checkpoints should be placed under a directory such as:
 /path/to/pretrained_models/
   mar/
     mar_base/
+      checkpoint-last.pth
+    mar_large/
       checkpoint-last.pth
 ```
 
@@ -64,7 +70,7 @@ A KL-16 checkpoint can be downloaded from:
 https://www.dropbox.com/scl/fi/hhmuvaiacrarfg28qxhwz/kl16.ckpt?rlkey=l44xipsezc8atcffdp4q7mwmh&dl=0
 ```
 
-If downloading from the command line, users may need to change `dl=0` to `dl=1` depending on the download tool.
+If downloading from the command line, users may need to change `dl=0` to `dl=1` depending on the download tool. Please follow the license and usage terms associated with the checkpoint.
 
 ### FID / Inception Statistics
 
@@ -90,7 +96,9 @@ export CONDA_SH=/path/to/miniconda3/etc/profile.d/conda.sh
 
 ## Verified Formal Workflow
 
-The official verified run path is:
+### Base Workflow
+
+The verified Base run path is:
 
 ```bash
 AUTO_SHUTDOWN=1 \
@@ -103,14 +111,29 @@ nohup bash scripts_server/run_base_train_then_parallel_eval.sh \
 > /path/to/output/base_mainpaper_7ep_8gpu.log 2>&1 &
 ```
 
+### Large Workflow
+
+The Large workflow follows the same training/evaluation structure. Because the Large backbone is more memory-intensive, a more conservative batch size is recommended by default:
+
+```bash
+AUTO_SHUTDOWN=1 \
+USE_TORCHRUN=1 NPROC_PER_NODE=8 \
+TRAIN_BSZ=64 \
+TRAIN_EPOCHS=7 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 TRAIN_RUN_NAME=train_ref_mixed_7ep \
+MIXED_POLICY_RATIO=0.0 \
+EVAL_RUN_NAME=eval_mainpaper EVAL_NUM_IMAGES=50000 EVAL_BSZ=64 EVAL_POLICIES=baseline,planner EVAL_NUM_ITERS=128,256 EVAL_GPU_IDS=0,1,2,3 \
+nohup bash scripts_server/run_large_train_then_parallel_eval.sh \
+> /path/to/output/large_mainpaper_7ep_8gpu.log 2>&1 &
+```
+
 Notes:
 
-- This is the verified formal server workflow.
+- These are the verified formal server workflows.
 - `EVAL_NUM_ITERS=128,256` restricts evaluation to the main-paper four points.
-- The evaluation script name contains `6points` for historical compatibility; `EVAL_NUM_ITERS` controls which decoding steps are actually evaluated.
-- The formal minimal reproduction uses only Base baseline/planner evaluation at 128 and 256 decoding steps.
-- Large can be run analogously using `train_large_ref_mixed.sh` and the same environment, but it is optional and compute expensive.
+- The evaluation script names contain `6points` for historical compatibility; `EVAL_NUM_ITERS` controls which decoding steps are actually evaluated.
+- The formal minimal reproduction uses baseline/planner evaluation at 128 and 256 decoding steps.
 - Use `NPROC_PER_NODE=7` instead of `8` on a seven-GPU server.
+- For the Large workflow, increase `TRAIN_BSZ` or `EVAL_BSZ` only after confirming memory safety on the target hardware.
 
 The active server scripts for the release are:
 
@@ -119,10 +142,14 @@ The active server scripts for the release are:
 - `scripts_server/train_base_ref_mixed.sh`
 - `scripts_server/train_large_ref_mixed.sh`
 - `scripts_server/eval_base_parallel_6points.sh`
+- `scripts_server/eval_large_parallel_6points.sh`
 - `scripts_server/run_base_train_then_parallel_eval.sh`
+- `scripts_server/run_large_train_then_parallel_eval.sh`
 - `scripts_server/collect_main_results.py`
 
 ## Collect Results
+
+For Base results:
 
 ```bash
 python scripts_server/collect_main_results.py \
@@ -134,11 +161,35 @@ python scripts_server/collect_main_results.py \
   --policies baseline,planner
 ```
 
-Expected outputs:
+For Large results:
 
-- `<OUTPUT_ROOT>/base_mainpaper_main_results_summary.csv`
-- `<OUTPUT_ROOT>/base_mainpaper_main_results_summary.json`
-- `<OUTPUT_ROOT>/base_mainpaper_pareto_data.csv`
+```bash
+python scripts_server/collect_main_results.py \
+  --root /path/to/output/planmar_main \
+  --models large \
+  --skip_missing_models \
+  --output_prefix large_mainpaper \
+  --eval_name eval_mainpaper \
+  --policies baseline,planner
+```
+
+For collecting both Base and Large results together:
+
+```bash
+python scripts_server/collect_main_results.py \
+  --root /path/to/output/planmar_main \
+  --models base,large \
+  --skip_missing_models \
+  --output_prefix mainpaper \
+  --eval_name eval_mainpaper \
+  --policies baseline,planner
+```
+
+Expected outputs include:
+
+- `<OUTPUT_ROOT>/<prefix>_main_results_summary.csv`
+- `<OUTPUT_ROOT>/<prefix>_main_results_summary.json`
+- `<OUTPUT_ROOT>/<prefix>_pareto_data.csv`
 - Per-run `eval.log`, `run_args.txt`, and `config.json` files under the selected output root.
 
 ## Scope of This Release
@@ -149,7 +200,7 @@ This release focuses on reproducing the formal main-result workflow. Optional me
 
 This implementation builds on the official MAR codebase:
 
-- `LTH14/mar`: [https://github.com/LTH14/mar](https://github.com/LTH14/mar?utm_source=chatgpt.com)
+- `LTH14/mar`: https://github.com/LTH14/mar
 
 We thank the MAR authors for releasing their PyTorch implementation, pretrained checkpoints, and evaluation framework.
 
