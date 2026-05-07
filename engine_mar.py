@@ -110,7 +110,15 @@ def train_one_epoch(model, vae,
             print("Loss is {}, stopping training".format(loss_value))
             sys.exit(1)
 
-        loss_scaler(loss, optimizer, clip_grad=args.grad_clip, parameters=model.parameters(), update_grad=True)
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+
+        loss_scaler(
+            loss,
+            optimizer,
+            clip_grad=args.grad_clip,
+            parameters=trainable_params,
+            update_grad=True,
+        )
         optimizer.zero_grad()
 
         torch.cuda.synchronize()

@@ -20,16 +20,21 @@ echo "TRAIN_EPOCHS=${TRAIN_EPOCHS}"
 echo "WARMUP_EPOCHS=${WARMUP_EPOCHS}"
 echo "TRAIN_BSZ=${TRAIN_BSZ}"
 echo "TRAIN_MAX_STEPS=${TRAIN_MAX_STEPS}"
-echo "USE_TORCHRUN=${USE_TORCHRUN}"
-echo "NPROC_PER_NODE=${NPROC_PER_NODE}"
+echo "USE_TORCHRUN=0"
+echo "NPROC_PER_NODE=1"
 echo "MIXED_POLICY_RATIO=${MIXED_POLICY_RATIO}"
+echo "FREEZE_MAR_BACKBONE=${FREEZE_MAR_BACKBONE}"
 echo "EVAL_POLICIES=${EVAL_POLICIES}"
 echo "TRAIN_DIR=${TRAIN_DIR}"
 
-if [ "${USE_TORCHRUN}" = "1" ]; then
-  LAUNCHER=(torchrun "--nproc_per_node=${NPROC_PER_NODE}")
-else
-  LAUNCHER=(python)
+# 单卡固定设置
+USE_TORCHRUN=0
+NPROC_PER_NODE=1
+LAUNCHER=(python)
+
+FREEZE_ARGS=()
+if [ "${FREEZE_MAR_BACKBONE}" = "1" ]; then
+  FREEZE_ARGS+=(--freeze_mar_backbone)
 fi
 
 CMD=("${LAUNCHER[@]}" main_revealmar.py
@@ -67,10 +72,30 @@ CMD=("${LAUNCHER[@]}" main_revealmar.py
   --log_ref_target_freq 50
   --log_revealmar_losses
   --log_revealmar_loss_freq 50
+  "${FREEZE_ARGS[@]}"
   --dist_url env://)
 
 printf '%q ' "${CMD[@]}" > "${TRAIN_DIR}/run_args.txt"
-write_json_config "${TRAIN_DIR}/config.json" model_name="${MODEL_NAME}" model="${MODEL}" train_run_name="${TRAIN_RUN_NAME}" train_epochs="${TRAIN_EPOCHS}" warmup_epochs="${WARMUP_EPOCHS}" train_bsz="${TRAIN_BSZ}" train_max_steps="${TRAIN_MAX_STEPS}" use_torchrun="${USE_TORCHRUN}" nproc_per_node="${NPROC_PER_NODE}" mixed_policy_ratio="${MIXED_POLICY_RATIO}" data_path="${DATA_ROOT}" resume="${PRETRAIN_CKPT}" output_dir="${TRAIN_DIR}" pseudo_target_type=ref_mixed_reveal candidate_selection_mode=mixed planner_loss_weight=1.0
+
+write_json_config "${TRAIN_DIR}/config.json" \
+  model_name="${MODEL_NAME}" \
+  model="${MODEL}" \
+  train_run_name="${TRAIN_RUN_NAME}" \
+  train_epochs="${TRAIN_EPOCHS}" \
+  warmup_epochs="${WARMUP_EPOCHS}" \
+  train_bsz="${TRAIN_BSZ}" \
+  train_max_steps="${TRAIN_MAX_STEPS}" \
+  use_torchrun=0 \
+  nproc_per_node=1 \
+  mixed_policy_ratio="${MIXED_POLICY_RATIO}" \
+  freeze_mar_backbone="${FREEZE_MAR_BACKBONE}" \
+  data_path="${DATA_ROOT}" \
+  resume="${PRETRAIN_CKPT}" \
+  output_dir="${TRAIN_DIR}" \
+  pseudo_target_type=ref_mixed_reveal \
+  candidate_selection_mode=mixed \
+  planner_loss_weight=1.0
+
 "${CMD[@]}" 2>&1 | tee "${TRAIN_DIR}/train.log" "${LOG_DIR}/${TRAIN_RUN_NAME}.log"
 
 check_path "${TRAIN_DIR}/checkpoint-last.pth" "trained checkpoint"

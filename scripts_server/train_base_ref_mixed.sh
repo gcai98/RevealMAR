@@ -20,18 +20,17 @@ echo "TRAIN_EPOCHS=${TRAIN_EPOCHS}"
 echo "WARMUP_EPOCHS=${WARMUP_EPOCHS}"
 echo "TRAIN_BSZ=${TRAIN_BSZ}"
 echo "TRAIN_MAX_STEPS=${TRAIN_MAX_STEPS}"
-echo "USE_TORCHRUN=${USE_TORCHRUN}"
-echo "NPROC_PER_NODE=${NPROC_PER_NODE}"
+echo "USE_TORCHRUN=0"
+echo "NPROC_PER_NODE=1"
 echo "MIXED_POLICY_RATIO=${MIXED_POLICY_RATIO}"
 echo "FREEZE_MAR_BACKBONE=${FREEZE_MAR_BACKBONE}"
 echo "EVAL_POLICIES=${EVAL_POLICIES}"
 echo "TRAIN_DIR=${TRAIN_DIR}"
 
-if [ "${USE_TORCHRUN}" = "1" ]; then
-  LAUNCHER=(torchrun "--nproc_per_node=${NPROC_PER_NODE}")
-else
-  LAUNCHER=(python)
-fi
+# 单卡固定设置
+USE_TORCHRUN=0
+NPROC_PER_NODE=1
+LAUNCHER=(python)
 
 FREEZE_ARGS=()
 if [ "${FREEZE_MAR_BACKBONE}" = "1" ]; then
@@ -86,8 +85,8 @@ write_json_config "${TRAIN_DIR}/config.json" \
   warmup_epochs="${WARMUP_EPOCHS}" \
   train_bsz="${TRAIN_BSZ}" \
   train_max_steps="${TRAIN_MAX_STEPS}" \
-  use_torchrun="${USE_TORCHRUN}" \
-  nproc_per_node="${NPROC_PER_NODE}" \
+  use_torchrun=0 \
+  nproc_per_node=1 \
   mixed_policy_ratio="${MIXED_POLICY_RATIO}" \
   freeze_mar_backbone="${FREEZE_MAR_BACKBONE}" \
   data_path="${DATA_ROOT}" \
