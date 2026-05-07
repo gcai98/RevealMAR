@@ -3,7 +3,11 @@
 CODE_DIR=${CODE_DIR:-/path/to/revealmar}
 DATA_ROOT=${DATA_ROOT:-/path/to/imagenet}
 PRETRAIN_ROOT=${PRETRAIN_ROOT:-/path/to/pretrained_models}
-OUTPUT_ROOT=${OUTPUT_ROOT:-/path/to/output/planmar_main}
+
+# Frozen-planner experiments should use a separate output root
+# to avoid mixing with previous joint-training results.
+OUTPUT_ROOT=${OUTPUT_ROOT:-/path/to/output/planmar_frozen}
+
 VAE_PATH=${VAE_PATH:-${PRETRAIN_ROOT}/vae/kl16.ckpt}
 
 MAR_BASE_CKPT=${MAR_BASE_CKPT:-${PRETRAIN_ROOT}/mar/mar_base}
@@ -15,12 +19,20 @@ CONDA_ENV=${CONDA_ENV:-revealmar}
 
 TRAIN_EPOCHS=${TRAIN_EPOCHS:-1}
 WARMUP_EPOCHS=${WARMUP_EPOCHS:-1}
-TRAIN_RUN_NAME=${TRAIN_RUN_NAME:-train_ref_mixed}
+
+# Default run name for frozen MAR + planner-only training.
+TRAIN_RUN_NAME=${TRAIN_RUN_NAME:-train_ref_mixed_frozen}
+
 TRAIN_BSZ=${TRAIN_BSZ:-64}
 TRAIN_MAX_STEPS=${TRAIN_MAX_STEPS:--1}
 USE_TORCHRUN=${USE_TORCHRUN:-0}
 NPROC_PER_NODE=${NPROC_PER_NODE:-1}
 MIXED_POLICY_RATIO=${MIXED_POLICY_RATIO:-0.0}
+
+# Main frozen-planner switch.
+# 1: pass --freeze_mar_backbone in training scripts.
+# 0: keep previous joint-training behavior.
+FREEZE_MAR_BACKBONE=${FREEZE_MAR_BACKBONE:-1}
 
 EVAL_RUN_NAME=${EVAL_RUN_NAME:-eval_main}
 EVAL_NUM_IMAGES=${EVAL_NUM_IMAGES:-50000}
@@ -106,9 +118,11 @@ from pathlib import Path
 path = Path(sys.argv[1])
 items = sys.argv[2:]
 config = {}
+
 for item in items:
     key, value = item.split("=", 1)
     config[key] = value
+
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 PY

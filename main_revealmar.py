@@ -22,6 +22,67 @@ from models import revealmar
 from engine_mar import train_one_epoch, evaluate
 
 
+def _parse_trainable_prefixes(prefixes: str):
+    return tuple(
+        p.strip()
+        for p in str(prefixes).split(",")
+        if p.strip()
+    )
+
+
+def _matches_any_prefix(name: str, prefixes):
+    return any(name == p or name.startswith(p + ".") for p in prefixes)
+
+
+def freeze_model_except_prefixes(model, prefixes):
+    """
+    Freeze all model parameters except modules whose names match the given prefixes.
+    For PlanMAR-S frozen-backbone training, this keeps the pretrained MAR value
+    predictor fixed and only trains the lightweight planner.
+    """
+    prefixes = _parse_trainable_prefixes(prefixes)
+
+    for _, p in model.named_parameters():
+        p.requires_grad = False
+
+    trainable_names = []
+    frozen_names = []
+
+    for name, p in model.named_parameters():
+        if _matches_any_prefix(name, prefixes):
+            p.requires_grad = True
+            trainable_names.append(name)
+        else:
+            frozen_names.append(name)
+
+    if len(trainable_names) == 0:
+        raise RuntimeError(
+            "No trainable parameters matched trainable prefixes: {}".format(prefixes)
+        )
+
+    return trainable_names, frozen_names
+
+
+def print_trainable_parameter_summary(model, title="Parameter summary"):
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    print(
+        "{}: trainable {:.6f}M / total {:.6f}M ({:.4f}%)".format(
+            title,
+            trainable_params / 1e6,
+            total_params / 1e6,
+            100.0 * trainable_params / max(total_params, 1),
+        )
+    )
+
+    trainable_names = [
+        name for name, p in model.named_parameters() if p.requires_grad
+    ]
+    print("Trainable parameter tensors: {}".format(len(trainable_names)))
+    print("First trainable tensors: {}".format(trainable_names[:20]))
+
+
 def get_args_parser():
     parser = argparse.ArgumentParser('RevealMAR training with Diffusion Loss', add_help=False)
     parser.add_argument('--batch_size', default=16, type=int,
@@ -106,7 +167,7 @@ def get_args_parser():
                         help='start epoch')
     parser.add_argument('--num_workers', default=10, type=int)
     parser.add_argument('--pin_mem', action='store_true',
-                        help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
+                        help='Pin CPU memory in DataLoader for more efficient transfer to GPU.')
     parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem')
     parser.set_defaults(pin_mem=True)
 
@@ -126,6 +187,24 @@ def get_args_parser():
 
     parser.add_argument('--planner_hidden_dim', default=128, type=int,
                         help='hidden dimension for RevealMAR planner')
+
+    parser.add_argument(
+        '--freeze_mar_backbone',
+        action='store_true',
+        help='Freeze the pretrained MAR backbone/value predictor and train only selected planner modules.'
+    )
+    parser.add_argument(
+        '--trainable_module_prefixes',
+        default='planner_head',
+        type=str,
+        help='Comma-separated module name prefixes kept trainable when --freeze_mar_backbone is enabled.'
+    )
+    parser.add_argument(
+        '--load_resume_optimizer',
+        action='store_true',
+        help='Also load optimizer/scaler/epoch state from --resume. Disabled by default to safely initialize from pretrained MAR checkpoints.'
+    )
+
     parser.add_argument('--planner_loss_weight', default=1.0, type=float,
                         help='loss weight for RevealMAR planner')
     parser.add_argument('--candidate_pool_size', default=8, type=int,
@@ -159,6 +238,7 @@ def get_args_parser():
                         help='Print compact ref_* pseudo target statistics during training')
     parser.add_argument('--log_ref_target_freq', default=20, type=int,
                         help='Print every N forward passes when --log_ref_target_debug is set')
+
     parser.add_argument('--sampling_policy', default='baseline', type=str,
                         choices=['baseline', 'planner', 'random', 'confidence', 'entropy'],
                         help='sampling policy for RevealMAR evaluation/sampling')
@@ -166,6 +246,7 @@ def get_args_parser():
                         help='MC diffusion samples for confidence/entropy uncertainty policies')
     parser.add_argument('--uncertainty_policy_temperature', default=1.0, type=float,
                         help='diffusion sampling temperature for confidence/entropy uncertainty policies')
+
     parser.add_argument('--candidate_selection_mode', default='topk', type=str,
                         choices=['topk', 'random', 'uncertainty', 'spatial', 'mixed'],
                         help='candidate subset proposal mode for RevealMAR')
@@ -177,6 +258,7 @@ def get_args_parser():
                         help='spatial proposal ratio for mixed candidate subset mode')
     parser.add_argument('--candidate_subset_seed', default=123, type=int,
                         help='deterministic seed for candidate subset proposal controls')
+
     parser.add_argument('--budget_mode', default='soft', type=str,
                         choices=['soft', 'hard'],
                         help='budget mode for RevealMAR')
@@ -192,6 +274,7 @@ def get_args_parser():
                         help='EMA smoothing coefficient for score-derived soft budget sequence')
     parser.add_argument('--budget_calibration_debug', action='store_true',
                         help='Print compact score-derived budget calibration diagnostics during sampling')
+
     parser.add_argument('--mixed_policy_ratio', default=0.0, type=float,
                         help='mixed policy ratio for RevealMAR')
     parser.add_argument('--mixed_policy_ratio_schedule', default='constant', type=str,
@@ -201,7 +284,7 @@ def get_args_parser():
                         help='warmup epochs for mixed_policy_ratio when schedule is linear_warmup')
 
     parser.add_argument('--log_revealmar_losses', action='store_true',
-                        help='Print RevealMAR loss decomposition (total, diffloss, planner_aux) during training')
+                        help='Print RevealMAR loss decomposition during training')
     parser.add_argument('--log_revealmar_loss_freq', type=int, default=20,
                         help='Print every N forward passes when --log_revealmar_losses is set')
     parser.add_argument('--log_mixed_policy_debug', action='store_true',
@@ -218,10 +301,8 @@ def get_args_parser():
     parser.add_argument('--early_intervention_steps', type=int, default=0,
                         help='Number of initial planner decoding steps to replace with intervention policy')
 
-    # Optional CUDA memory diagnostics.
     parser.add_argument('--log_gpu_mem', action='store_true',
                         help='Log CUDA memory peak for diagnostics')
-
     parser.add_argument('--log_gpu_mem_freq', default=50, type=int,
                         help='Log CUDA memory every N iterations/steps')
 
@@ -260,23 +341,35 @@ def main(args):
     if args.use_cached:
         dataset_train = CachedFolder(args.cached_path)
     else:
-        dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
+        dataset_train = datasets.ImageFolder(
+            os.path.join(args.data_path, 'train'),
+            transform=transform_train,
+        )
     print(dataset_train)
 
     sampler_train = torch.utils.data.DistributedSampler(
-        dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
+        dataset_train,
+        num_replicas=num_tasks,
+        rank=global_rank,
+        shuffle=True,
     )
     print("Sampler_train = %s" % str(sampler_train))
 
     data_loader_train = torch.utils.data.DataLoader(
-        dataset_train, sampler=sampler_train,
+        dataset_train,
+        sampler=sampler_train,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
         drop_last=True,
     )
 
-    vae = AutoencoderKL(embed_dim=args.vae_embed_dim, ch_mult=(1, 1, 2, 2, 4), ckpt_path=args.vae_path).cuda().eval()
+    vae = AutoencoderKL(
+        embed_dim=args.vae_embed_dim,
+        ch_mult=(1, 1, 2, 2, 4),
+        ckpt_path=args.vae_path,
+    ).cuda().eval()
+
     for param in vae.parameters():
         param.requires_grad = False
 
@@ -329,16 +422,97 @@ def main(args):
     )
 
     print("Model = %s" % str(model))
-    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print("Number of trainable parameters: {}M".format(n_params / 1e6))
 
     model.to(device)
     model_without_ddp = model
 
+    # ------------------------------------------------------------------
+    # Load pretrained MAR checkpoint before freezing/optimizer creation.
+    # For frozen-planner training, --resume is used as initialization from
+    # the original MAR checkpoint, not as a full optimizer-state resume.
+    # ------------------------------------------------------------------
+    checkpoint = None
+    checkpoint_path = None
+
+    if args.resume and os.path.exists(os.path.join(args.resume, 'checkpoint-last.pth')):
+        checkpoint_path = os.path.join(args.resume, 'checkpoint-last.pth')
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+
+        load_result = model_without_ddp.load_state_dict(
+            checkpoint['model'],
+            strict=False,
+        )
+
+        if load_result.missing_keys:
+            print('Resume missing model keys (likely new RevealMAR params): {}'.format(
+                load_result.missing_keys
+            ))
+        if load_result.unexpected_keys:
+            print('Resume unexpected model keys (ignored): {}'.format(
+                load_result.unexpected_keys
+            ))
+
+        print('Loaded model weights from %s' % checkpoint_path)
+    else:
+        print('Training from scratch')
+
+    # ------------------------------------------------------------------
+    # Frozen-MAR PlanMAR-S mode:
+    # keep pretrained token-value prediction path fixed and train only
+    # planner modules, by default planner_head.*.
+    # ------------------------------------------------------------------
+    if args.freeze_mar_backbone:
+        trainable_names, frozen_names = freeze_model_except_prefixes(
+            model_without_ddp,
+            args.trainable_module_prefixes,
+        )
+        print("[Frozen-MAR] Enabled --freeze_mar_backbone")
+        print("[Frozen-MAR] Trainable prefixes: {}".format(
+            args.trainable_module_prefixes
+        ))
+        print("[Frozen-MAR] Number of trainable tensors: {}".format(
+            len(trainable_names)
+        ))
+        print("[Frozen-MAR] Number of frozen tensors: {}".format(
+            len(frozen_names)
+        ))
+        print("[Frozen-MAR] Trainable tensors: {}".format(trainable_names))
+    else:
+        print(
+            "[Joint-training] --freeze_mar_backbone is disabled; "
+            "all parameters with requires_grad=True are trainable."
+        )
+
+    print_trainable_parameter_summary(
+        model_without_ddp,
+        title="Number of parameters after freeze setup",
+    )
+
+    # EMA must stay aligned with all named_parameters because save_model()
+    # reconstructs model_ema by enumerating all model parameters.
     model_params = list(model_without_ddp.parameters())
-    ema_params = copy.deepcopy(model_params)
+
+    if checkpoint is not None and 'model_ema' in checkpoint:
+        ema_state_dict = checkpoint['model_ema']
+        ema_params = []
+        ema_missing_keys = []
+
+        for name, param in model_without_ddp.named_parameters():
+            if name in ema_state_dict:
+                ema_params.append(ema_state_dict[name].to(device))
+            else:
+                ema_missing_keys.append(name)
+                ema_params.append(param.detach().clone())
+
+        if ema_missing_keys:
+            print('EMA missing keys in checkpoint, fallback to current params: {}'.format(
+                ema_missing_keys
+            ))
+    else:
+        ema_params = [p.detach().clone() for p in model_params]
 
     eff_batch_size = args.batch_size * misc.get_world_size()
+
     if args.lr is None:
         args.lr = args.blr * eff_batch_size / 256
 
@@ -347,7 +521,10 @@ def main(args):
     print("effective batch size: %d" % eff_batch_size)
 
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[args.gpu],
+        )
         model_without_ddp = model.module
 
     model_without_ddp._revealmar_loss_log_freq = (
@@ -357,81 +534,135 @@ def main(args):
         int(args.log_mixed_policy_freq) if args.log_mixed_policy_debug else 0
     )
     model_without_ddp._revealmar_sampling_debug = bool(args.log_planner_sampling_debug)
-    model_without_ddp._revealmar_sampling_debug_steps = int(args.log_planner_sampling_steps)
-    model_without_ddp._revealmar_early_intervention_policy = args.early_intervention_policy
-    model_without_ddp._revealmar_early_intervention_steps = int(args.early_intervention_steps)
-    model_without_ddp._revealmar_mixed_policy_ratio_schedule = args.mixed_policy_ratio_schedule
-    model_without_ddp._revealmar_mixed_policy_ratio_warmup_epochs = int(args.mixed_policy_ratio_warmup_epochs)
+    model_without_ddp._revealmar_sampling_debug_steps = int(
+        args.log_planner_sampling_steps
+    )
+    model_without_ddp._revealmar_early_intervention_policy = (
+        args.early_intervention_policy
+    )
+    model_without_ddp._revealmar_early_intervention_steps = int(
+        args.early_intervention_steps
+    )
+    model_without_ddp._revealmar_mixed_policy_ratio_schedule = (
+        args.mixed_policy_ratio_schedule
+    )
+    model_without_ddp._revealmar_mixed_policy_ratio_warmup_epochs = int(
+        args.mixed_policy_ratio_warmup_epochs
+    )
 
     param_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
     print(optimizer)
     loss_scaler = NativeScaler()
 
-    if args.resume and os.path.exists(os.path.join(args.resume, 'checkpoint-last.pth')):
-        checkpoint = torch.load(os.path.join(args.resume, 'checkpoint-last.pth'), map_location='cpu', weights_only=False)
-        load_result = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
-        if load_result.missing_keys:
-            print('Resume missing model keys (likely new RevealMAR params): {}'.format(load_result.missing_keys))
-        if load_result.unexpected_keys:
-            print('Resume unexpected model keys (ignored): {}'.format(load_result.unexpected_keys))
-        if 'model_ema' in checkpoint:
-            ema_state_dict = checkpoint['model_ema']
-            ema_params_new = []
-            ema_missing_keys = []
-            for name, param in model_without_ddp.named_parameters():
-                if name in ema_state_dict:
-                    ema_params_new.append(ema_state_dict[name].to(device))
-                else:
-                    ema_missing_keys.append(name)
-                    ema_params_new.append(param.detach().clone())
-            if ema_missing_keys:
-                print('EMA missing keys in checkpoint, fallback to current params: {}'.format(ema_missing_keys))
-            ema_params = ema_params_new
+    # Load optimizer/scaler/epoch only when explicitly requested.
+    # This avoids accidentally importing optimizer state from the original
+    # MAR checkpoint when we only want model-weight initialization.
+    if checkpoint is not None and args.load_resume_optimizer:
         if 'optimizer' in checkpoint and 'epoch' in checkpoint:
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            args.start_epoch = checkpoint['epoch'] + 1
-            if 'scaler' in checkpoint:
+            try:
+                optimizer.load_state_dict(checkpoint['optimizer'])
+                args.start_epoch = checkpoint['epoch'] + 1
+                print('Loaded optimizer state from %s' % args.resume)
+            except Exception as exc:
+                print('[WARN] Failed to load optimizer state: {}'.format(exc))
+                print('[WARN] Continue with a fresh optimizer.')
+
+        if 'scaler' in checkpoint:
+            try:
                 loss_scaler.load_state_dict(checkpoint['scaler'])
-        print('Resume checkpoint %s' % args.resume)
+                print('Loaded GradScaler state from %s' % args.resume)
+            except Exception as exc:
+                print('[WARN] Failed to load GradScaler state: {}'.format(exc))
+                print('[WARN] Continue with a fresh GradScaler.')
+    elif checkpoint is not None:
+        print(
+            'Skip optimizer/scaler/epoch loading from %s. '
+            'Use --load_resume_optimizer only when resuming the same training run.'.format(
+                args.resume
+            )
+        )
+
+    if checkpoint is not None:
         del checkpoint
-    else:
-        print('Training from scratch')
 
     if args.evaluate:
         torch.cuda.empty_cache()
-        evaluate(model_without_ddp, vae, ema_params, args, 0,
-                 batch_size=args.eval_bsz, log_writer=log_writer, cfg=args.cfg, use_ema=True)
+        evaluate(
+            model_without_ddp,
+            vae,
+            ema_params,
+            args,
+            0,
+            batch_size=args.eval_bsz,
+            log_writer=log_writer,
+            cfg=args.cfg,
+            use_ema=True,
+        )
         return
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
+
     for epoch in range(args.start_epoch, args.epochs):
         model_without_ddp._revealmar_current_epoch = epoch
+
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
 
         train_one_epoch(
-            model, vae,
-            model_params, ema_params,
+            model,
+            vae,
+            model_params,
+            ema_params,
             data_loader_train,
-            optimizer, device, epoch, loss_scaler,
+            optimizer,
+            device,
+            epoch,
+            loss_scaler,
             log_writer=log_writer,
-            args=args
+            args=args,
         )
 
         if epoch % args.save_last_freq == 0 or epoch + 1 == args.epochs:
-            misc.save_model(args=args, model=model, model_without_ddp=model_without_ddp,
-                            optimizer=optimizer, loss_scaler=loss_scaler, epoch=epoch,
-                            ema_params=ema_params, epoch_name='last')
+            misc.save_model(
+                args=args,
+                model=model,
+                model_without_ddp=model_without_ddp,
+                optimizer=optimizer,
+                loss_scaler=loss_scaler,
+                epoch=epoch,
+                ema_params=ema_params,
+                epoch_name='last',
+            )
 
         if args.online_eval and (epoch % args.eval_freq == 0 or epoch + 1 == args.epochs):
             torch.cuda.empty_cache()
-            evaluate(model_without_ddp, vae, ema_params, args, epoch,
-                     batch_size=args.eval_bsz, log_writer=log_writer, cfg=1.0, use_ema=True)
+            evaluate(
+                model_without_ddp,
+                vae,
+                ema_params,
+                args,
+                epoch,
+                batch_size=args.eval_bsz,
+                log_writer=log_writer,
+                cfg=1.0,
+                use_ema=True,
+            )
+
             if not (args.cfg == 1.0 or args.cfg == 0.0):
-                evaluate(model_without_ddp, vae, ema_params, args, epoch,
-                         batch_size=args.eval_bsz // 2, log_writer=log_writer, cfg=args.cfg, use_ema=True)
+                evaluate(
+                    model_without_ddp,
+                    vae,
+                    ema_params,
+                    args,
+                    epoch,
+                    batch_size=args.eval_bsz // 2,
+                    log_writer=log_writer,
+                    cfg=args.cfg,
+                    use_ema=True,
+                )
+
             torch.cuda.empty_cache()
 
         if misc.is_main_process():
@@ -439,7 +670,9 @@ def main(args):
                 log_writer.flush()
 
     total_time = time.time() - start_time
-    print('Training time {}'.format(str(datetime.timedelta(seconds=int(total_time)))))
+    print('Training time {}'.format(
+        str(datetime.timedelta(seconds=int(total_time)))
+    ))
 
 
 if __name__ == '__main__':
