@@ -8,7 +8,8 @@ from tqdm import tqdm
 
 import util.misc as misc
 from models.mar import MAR
-from util.revealmar_utils import build_candidate_subset, build_pseudo_target
+from util.revealmar_candidates import build_candidate_subset
+from util.revealmar_utils import build_pseudo_target
 
 
 class RevealMAR(MAR):
