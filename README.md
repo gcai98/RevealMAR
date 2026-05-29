@@ -4,7 +4,7 @@ PlanMAR-S extends masked autoregressive image generation with a lightweight plan
 
 ![PlanMAR-S overview](figs/planmar_overview.jpg)
 
-This release focuses on the formal server-side main-result reproduction workflow.
+This release provides the formal server-side main-result reproduction workflow and additional MAR-Base control/ablation scripts for Table 2, Table 4, and Table 5 of the paper. The main workflow covers MAR-Base and MAR-Large comparisons. The additional scripts cover fine-tuning control, ranking-budget ablation, and pseudo-target ablation on MAR-Base.
 
 ## Installation
 
@@ -87,14 +87,52 @@ is used for ImageNet 256×256 FID evaluation if permitted by the release policy.
 Edit `scripts_server/common_env.sh` or override these variables:
 
 ```bash
-export CODE_DIR=/path/to/planmar-s
+export CODE_DIR=/path/to/RevealMAR
 export DATA_ROOT=/path/to/imagenet
 export PRETRAIN_ROOT=/path/to/pretrained_models
 export OUTPUT_ROOT=/path/to/output/planmar_main
 export CONDA_SH=/path/to/miniconda3/etc/profile.d/conda.sh
 ```
 
-## Verified Formal Workflow
+The expected pretrained checkpoint layout is:
+
+```text
+${PRETRAIN_ROOT}/
+  mar/
+    mar_base/
+      checkpoint-last.pth
+    mar_large/
+      checkpoint-last.pth
+  vae/
+    kl16.ckpt
+```
+
+Before running formal jobs, check the server environment:
+
+```bash
+bash scripts_server/check_server_ready.sh
+```
+
+## Main Training Recipe
+
+The main PlanMAR-S training recipe uses:
+
+```text
+pseudo_target_type          = ref_mixed_reveal
+ref_target_horizon         = 1
+ref_target_loss            = feature_mse
+ref_target_local_radius    = 1
+ref_target_max_candidates  = 8
+candidate_pool_size        = 8
+candidate_selection_mode   = mixed
+planner_loss_weight        = 1.0
+ref_target_mix_alpha       = 0.5
+mixed_policy_ratio         = 0.0
+```
+
+This corresponds to the one-step reference-policy-conditioned mixed-reveal target. Mixed-policy exposure is disabled in the main recipe by setting `MIXED_POLICY_RATIO=0.0`.
+
+## Verified Main-Result Workflow
 
 ### Base Workflow
 
@@ -128,26 +166,188 @@ nohup bash scripts_server/run_large_train_then_parallel_eval.sh \
 
 Notes:
 
-- These are the verified formal server workflows.
+- These are the verified formal server workflows for the main comparison.
 - `EVAL_NUM_ITERS=128,256` restricts evaluation to the main-paper four points.
 - The evaluation script names contain `6points` for historical compatibility; `EVAL_NUM_ITERS` controls which decoding steps are actually evaluated.
-- The formal minimal reproduction uses baseline/planner evaluation at 128 and 256 decoding steps.
+- The formal main-result reproduction uses baseline/planner evaluation at 128 and 256 decoding steps.
 - Use `NPROC_PER_NODE=7` instead of `8` on a seven-GPU server.
 - For the Large workflow, increase `TRAIN_BSZ` or `EVAL_BSZ` only after confirming memory safety on the target hardware.
 
+## Additional Paper Controls and Ablations
+
+The following scripts reproduce the MAR-Base control and ablation settings reported in the paper.
+
+These scripts assume that the main Base PlanMAR-S checkpoint has already been trained under:
+
+```text
+${OUTPUT_ROOT}/base/train_ref_mixed_7ep/checkpoint-last.pth
+```
+
+unless otherwise specified.
+
+### Table 2: Fine-Tuning and Planner-Decoding Control
+
+This script evaluates the following MAR-Base 128-step settings:
+
+```text
+Original MAR checkpoint + cosine schedule + cosine budget
+PlanMAR-S fine-tuned checkpoint + cosine schedule + cosine budget
+PlanMAR-S fine-tuned checkpoint + planner ranking + cosine budget
+PlanMAR-S fine-tuned checkpoint + planner ranking + score-derived budget
+```
+
+Run:
+
+```bash
+TRAIN_RUN_NAME=train_ref_mixed_7ep \
+EVAL_RUN_NAME=eval_table2_control \
+EVAL_NUM_IMAGES=50000 \
+EVAL_BSZ=128 \
+EVAL_GPU_IDS=0,1,2,3 \
+bash scripts_server/eval_base_table2_control.sh
+```
+
+The outputs are written under:
+
+```text
+${OUTPUT_ROOT}/base/eval_table2_control/
+```
+
+Each row has its own subdirectory containing:
+
+```text
+eval.log
+run_args.txt
+config.json
+```
+
+### Table 4: Ranking-Budget Ablation
+
+This script evaluates the following MAR-Base 128-step settings:
+
+```text
+Cosine schedule + cosine budget
+Entropy ranking + cosine budget
+Entropy ranking + score-derived budget
+Planner ranking + cosine budget
+Planner ranking + score-derived budget
+```
+
+Run:
+
+```bash
+TRAIN_RUN_NAME=train_ref_mixed_7ep \
+EVAL_RUN_NAME=eval_table4_ranking_budget \
+EVAL_NUM_IMAGES=50000 \
+EVAL_BSZ=128 \
+EVAL_GPU_IDS=0,1,2,3,4 \
+bash scripts_server/eval_base_table4_ranking_budget.sh
+```
+
+The outputs are written under:
+
+```text
+${OUTPUT_ROOT}/base/eval_table4_ranking_budget/
+```
+
+Each row has its own subdirectory containing:
+
+```text
+eval.log
+run_args.txt
+config.json
+```
+
+### Table 5: Pseudo-Target Ablation
+
+This ablation compares three reference-policy-conditioned pseudo-target variants:
+
+```text
+ref_gt_reveal
+ref_pred_reveal
+ref_mixed_reveal
+```
+
+Train the three target variants:
+
+```bash
+TARGET_TYPE=ref_gt_reveal \
+TRAIN_RUN_NAME=train_ref_gt_reveal_target_ablation \
+USE_TORCHRUN=1 NPROC_PER_NODE=8 \
+TRAIN_BSZ=96 \
+TRAIN_EPOCHS=7 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 \
+MIXED_POLICY_RATIO=0.0 \
+bash scripts_server/train_base_target_ablation.sh
+```
+
+```bash
+TARGET_TYPE=ref_pred_reveal \
+TRAIN_RUN_NAME=train_ref_pred_reveal_target_ablation \
+USE_TORCHRUN=1 NPROC_PER_NODE=8 \
+TRAIN_BSZ=96 \
+TRAIN_EPOCHS=7 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 \
+MIXED_POLICY_RATIO=0.0 \
+bash scripts_server/train_base_target_ablation.sh
+```
+
+```bash
+TARGET_TYPE=ref_mixed_reveal \
+TRAIN_RUN_NAME=train_ref_mixed_reveal_target_ablation \
+USE_TORCHRUN=1 NPROC_PER_NODE=8 \
+TRAIN_BSZ=96 \
+TRAIN_EPOCHS=7 WARMUP_EPOCHS=1 TRAIN_MAX_STEPS=-1 \
+MIXED_POLICY_RATIO=0.0 \
+bash scripts_server/train_base_target_ablation.sh
+```
+
+Then evaluate the three target variants:
+
+```bash
+EVAL_RUN_NAME=eval_table5_target_ablation \
+EVAL_NUM_IMAGES=50000 \
+EVAL_BSZ=128 \
+EVAL_GPU_IDS=0,1,2 \
+bash scripts_server/eval_base_target_ablation.sh
+```
+
+The outputs are written under:
+
+```text
+${OUTPUT_ROOT}/base/eval_table5_target_ablation/
+```
+
+Each target variant has its own subdirectory containing:
+
+```text
+eval.log
+run_args.txt
+config.json
+```
+
+## Active Server Scripts
+
 The active server scripts for the release are:
 
-- `scripts_server/common_env.sh`
-- `scripts_server/check_server_ready.sh`
-- `scripts_server/train_base_ref_mixed.sh`
-- `scripts_server/train_large_ref_mixed.sh`
-- `scripts_server/eval_base_parallel_6points.sh`
-- `scripts_server/eval_large_parallel_6points.sh`
-- `scripts_server/run_base_train_then_parallel_eval.sh`
-- `scripts_server/run_large_train_then_parallel_eval.sh`
-- `scripts_server/collect_main_results.py`
+```text
+scripts_server/common_env.sh
+scripts_server/check_server_ready.sh
 
-## Collect Results
+scripts_server/train_base_ref_mixed.sh
+scripts_server/train_large_ref_mixed.sh
+scripts_server/eval_base_parallel_6points.sh
+scripts_server/eval_large_parallel_6points.sh
+scripts_server/run_base_train_then_parallel_eval.sh
+scripts_server/run_large_train_then_parallel_eval.sh
+
+scripts_server/eval_base_table2_control.sh
+scripts_server/eval_base_table4_ranking_budget.sh
+scripts_server/train_base_target_ablation.sh
+scripts_server/eval_base_target_ablation.sh
+
+scripts_server/collect_main_results.py
+```
+
+## Collect Main Results
 
 For Base results:
 
@@ -187,14 +387,67 @@ python scripts_server/collect_main_results.py \
 
 Expected outputs include:
 
-- `<OUTPUT_ROOT>/<prefix>_main_results_summary.csv`
-- `<OUTPUT_ROOT>/<prefix>_main_results_summary.json`
-- `<OUTPUT_ROOT>/<prefix>_pareto_data.csv`
-- Per-run `eval.log`, `run_args.txt`, and `config.json` files under the selected output root.
+```text
+<OUTPUT_ROOT>/<prefix>_main_results_summary.csv
+<OUTPUT_ROOT>/<prefix>_main_results_summary.json
+<OUTPUT_ROOT>/<prefix>_pareto_data.csv
+```
+
+Per-run files are saved under the selected output root:
+
+```text
+eval.log
+run_args.txt
+config.json
+```
 
 ## Scope of This Release
 
-This release focuses on reproducing the formal main-result workflow. Optional mechanism experiments, debug/probe scripts, platform-specific runners, and historical ablation scripts are not part of this minimal release package.
+This release covers:
+
+```text
+Main ImageNet-1K 256×256 MAR-Base/MAR-Large workflow
+Table 2 MAR-Base fine-tuning and planner-decoding control
+Table 4 MAR-Base ranking-budget ablation
+Table 5 MAR-Base pseudo-target ablation
+```
+
+The release does not redistribute ImageNet images, pretrained MAR checkpoints, the KL-16 VAE checkpoint, or other third-party assets.
+
+The Table 3 ranking-signal diagnostics are analysis diagnostics against the pseudo utility target. They are not included in the minimal server reproduction workflow of this release. The main sample-quality results are evaluated separately by FID and Inception Score.
+
+Optional platform-specific runners, historical debug/probe scripts, and non-paper exploratory experiments are not part of the formal release workflow.
+
+## Windows Editing and Line Endings
+
+The server scripts are intended to run on Linux. If editing this repository on Windows, ensure that shell scripts use LF line endings.
+
+A recommended `.gitattributes` policy is:
+
+```text
+*.sh text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+```
+
+Before running on a Linux server, users may check scripts with:
+
+```bash
+bash -n scripts_server/common_env.sh
+bash -n scripts_server/check_server_ready.sh
+bash -n scripts_server/train_base_ref_mixed.sh
+bash -n scripts_server/train_large_ref_mixed.sh
+bash -n scripts_server/eval_base_parallel_6points.sh
+bash -n scripts_server/eval_large_parallel_6points.sh
+bash -n scripts_server/run_base_train_then_parallel_eval.sh
+bash -n scripts_server/run_large_train_then_parallel_eval.sh
+bash -n scripts_server/eval_base_table2_control.sh
+bash -n scripts_server/eval_base_table4_ranking_budget.sh
+bash -n scripts_server/train_base_target_ablation.sh
+bash -n scripts_server/eval_base_target_ablation.sh
+```
 
 ## Acknowledgements
 
