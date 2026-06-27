@@ -247,7 +247,7 @@ def get_args_parser():
     parser.add_argument('--uncertainty_policy_temperature', default=1.0, type=float,
                         help='diffusion sampling temperature for confidence/entropy uncertainty policies')
 
-    parser.add_argument('--candidate_selection_mode', default='topk', type=str,
+    parser.add_argument('--candidate_selection_mode', default='mixed', type=str,
                         choices=['topk', 'random', 'uncertainty', 'spatial', 'mixed'],
                         help='candidate subset proposal mode for RevealMAR')
     parser.add_argument('--candidate_random_ratio', default=0.25, type=float,
