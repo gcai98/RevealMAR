@@ -31,6 +31,7 @@ class RevealMAR(MAR):
         log_ref_target_debug=False,
         log_ref_target_freq=20,
         sampling_policy='baseline',
+        planner_frontier_multiplier=4.0,
         uncertainty_mc_samples=2,
         uncertainty_policy_temperature=1.0,
         candidate_selection_mode='topk',
@@ -63,6 +64,7 @@ class RevealMAR(MAR):
         self.log_ref_target_debug = log_ref_target_debug
         self.log_ref_target_freq = log_ref_target_freq
         self.sampling_policy = sampling_policy
+        self.planner_frontier_multiplier = planner_frontier_multiplier
         self.uncertainty_mc_samples = uncertainty_mc_samples
         self.uncertainty_policy_temperature = uncertainty_policy_temperature
         self.candidate_selection_mode = candidate_selection_mode
@@ -86,7 +88,15 @@ class RevealMAR(MAR):
             'ref_gt_reveal', 'ref_pred_reveal', 'ref_mixed_reveal',
             'control_zero', 'control_random', 'control_shuffle',
         }
-        valid_sampling_policies = {'baseline', 'planner', 'random', 'confidence', 'entropy'}
+        valid_sampling_policies = {
+            'baseline',
+            'planner',
+            'planner_frontier',
+            'planner_reverse',
+            'random',
+            'confidence',
+            'entropy',
+        }
         valid_candidate_selection_modes = {'topk', 'random', 'uncertainty', 'spatial', 'mixed'}
         valid_ref_target_policies = {'cosine'}
         valid_ref_target_losses = {'feature_mse'}
@@ -163,7 +173,12 @@ class RevealMAR(MAR):
             raise ValueError(
                 "Unsupported control_random_std {}. Expected value >= 0".format(self.control_random_std)
             )
-        if float(self.budget_temperature) <= 0.0:
+        if float(self.planner_frontier_multiplier) <= 0.0:
+            raise ValueError(
+                "Unsupported planner_frontier_multiplier {}. Expected value > 0".format(
+                    self.planner_frontier_multiplier
+                )
+            )
             raise ValueError(
                 "Unsupported budget_temperature {}. Expected value > 0".format(self.budget_temperature)
             )
@@ -223,6 +238,7 @@ class RevealMAR(MAR):
             f"ref_target_loss={self.ref_target_loss}, "
             f"ref_target_max_candidates={self.ref_target_max_candidates}, "
             f"sampling_policy={self.sampling_policy}, "
+            f"planner_frontier_multiplier={self.planner_frontier_multiplier}, "
             f"uncertainty_mc_samples={self.uncertainty_mc_samples}, "
             f"uncertainty_policy_temperature={self.uncertainty_policy_temperature}, "
             f"candidate_selection_mode={self.candidate_selection_mode}, "
@@ -416,7 +432,21 @@ class RevealMAR(MAR):
         return masked_coords.view(mask_bool.size(0), masked_token_count, 2)
 
     def _compute_masked_planner_scores(self, z, mask):
-        planner_scores = torch.nan_to_num(self.planner_head(z).squeeze(-1), nan=0.0, posinf=0.0, neginf=0.0)
+        """
+        Compute planner scores on masked tokens only.
+
+        The decoder feature tensor is detached before entering planner_head. This
+        enforces the PlanMAR-S frozen-generator boundary: planner supervision
+        trains the planner head but does not backpropagate into the pretrained
+        MAR value-prediction path.
+        """
+        planner_features = z.detach()
+        planner_scores = torch.nan_to_num(
+            self.planner_head(planner_features).squeeze(-1),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
         mask_bool = mask.bool()
         assert planner_scores.shape == mask_bool.shape, "Planner score/mask shape mismatch"
         masked_counts = mask_bool.sum(dim=1)
@@ -539,7 +569,22 @@ class RevealMAR(MAR):
             }
         return smoothed_budget
 
-    def _select_reveal_mask_from_scores(self, mask, reveal_count, masked_scores, masked_positions, masked_coords):
+    def _select_reveal_mask_from_scores(
+        self,
+        mask,
+        reveal_count,
+        masked_scores,
+        masked_positions,
+        masked_coords,
+        largest=True,
+    ):
+        """
+        Select reveal tokens by global TopK over all currently masked tokens.
+
+        Candidate subsets are only for target construction during training. At
+        inference time, using candidate subsets would make the actual policy
+        differ from the paper-level decision rule S_t = TopK(u_t, k_t).
+        """
         bsz = mask.size(0)
         mask_bool = mask.bool()
         if reveal_count <= 0 or not mask_bool.any():
@@ -550,25 +595,30 @@ class RevealMAR(MAR):
         if reveal_count == masked_token_count:
             return mask_bool.clone()
 
-        candidate_pool_size = max(self.candidate_pool_size, reveal_count)
-        candidate_indices = build_candidate_subset(
-            masked_scores,
-            candidate_pool_size,
-            masked_coords=masked_coords,
-            selection_mode=self.candidate_selection_mode,
-            random_ratio=self.candidate_random_ratio,
-            uncertainty_ratio=self.candidate_uncertainty_ratio,
-            spatial_ratio=self.candidate_spatial_ratio,
-            subset_seed=self.candidate_subset_seed,
+        safe_scores = torch.nan_to_num(
+            masked_scores.float(),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
+        selected_masked_indices = torch.topk(
+            safe_scores,
+            k=reveal_count,
+            dim=-1,
+            largest=bool(largest),
+        ).indices
+        selected_full_positions = torch.gather(
+            masked_positions,
+            dim=1,
+            index=selected_masked_indices,
         )
 
-        candidate_scores = torch.gather(masked_scores, dim=1, index=candidate_indices)
-        selected_within_candidate = torch.topk(candidate_scores, k=reveal_count, dim=-1, largest=True).indices
-        selected_masked_indices = torch.gather(candidate_indices, dim=1, index=selected_within_candidate)
-        selected_full_positions = torch.gather(masked_positions, dim=1, index=selected_masked_indices)
-
         mask_to_pred = torch.zeros(bsz, self.seq_len, device=mask.device, dtype=torch.bool)
-        mask_to_pred.scatter_(dim=1, index=selected_full_positions, src=torch.ones_like(selected_full_positions, dtype=torch.bool))
+        mask_to_pred.scatter_(
+            dim=1,
+            index=selected_full_positions,
+            src=torch.ones_like(selected_full_positions, dtype=torch.bool),
+        )
         return mask_to_pred
 
     def _select_planner_reveal_mask(self, z, mask, reveal_count):
@@ -576,6 +626,76 @@ class RevealMAR(MAR):
         return self._select_reveal_mask_from_scores(
             mask, reveal_count, planner_scores_masked, masked_positions, masked_coords
         )
+    
+    def _select_frontier_rerank_mask(
+        self,
+        mask,
+        reveal_count,
+        planner_scores_masked,
+        masked_positions,
+        order_rank,
+    ):
+        """
+        Rerank a reference reveal frontier instead of ranking all masked tokens
+        from scratch.
+
+        The reference frontier is induced by the original MAR random reveal
+        order. Among currently masked tokens, larger order-rank values are closer
+        to the next cosine-schedule reveal frontier. The planner then reranks a
+        frontier of width ceil(planner_frontier_multiplier * reveal_count).
+        """
+        bsz = mask.size(0)
+        mask_bool = mask.bool()
+        if reveal_count <= 0 or not mask_bool.any():
+            return torch.zeros_like(mask_bool)
+
+        masked_token_count = planner_scores_masked.size(1)
+        reveal_count = min(int(reveal_count), masked_token_count)
+        if reveal_count == masked_token_count:
+            return mask_bool.clone()
+
+        frontier_multiplier = max(float(self.planner_frontier_multiplier), 1.0)
+        frontier_size = int(math.ceil(frontier_multiplier * float(reveal_count)))
+        frontier_size = min(masked_token_count, max(reveal_count, frontier_size))
+
+        masked_order_rank = torch.gather(order_rank, dim=1, index=masked_positions)
+        frontier_masked_indices = torch.topk(
+            masked_order_rank.float(),
+            k=frontier_size,
+            dim=-1,
+            largest=True,
+        ).indices
+
+        frontier_scores = torch.gather(
+            planner_scores_masked,
+            dim=1,
+            index=frontier_masked_indices,
+        )
+        selected_within_frontier = torch.topk(
+            torch.nan_to_num(frontier_scores.float(), nan=0.0, posinf=0.0, neginf=0.0),
+            k=reveal_count,
+            dim=-1,
+            largest=True,
+        ).indices
+        selected_masked_indices = torch.gather(
+            frontier_masked_indices,
+            dim=1,
+            index=selected_within_frontier,
+        )
+        selected_full_positions = torch.gather(
+            masked_positions,
+            dim=1,
+            index=selected_masked_indices,
+        )
+
+        mask_to_pred = torch.zeros(bsz, self.seq_len, device=mask.device, dtype=torch.bool)
+        mask_to_pred.scatter_(
+            dim=1,
+            index=selected_full_positions,
+            src=torch.ones_like(selected_full_positions, dtype=torch.bool),
+        )
+        return mask_to_pred
+    
 
     def _selected_positions_and_coords_from_mask(self, mask_to_pred):
         if not mask_to_pred.any():
@@ -1141,6 +1261,15 @@ class RevealMAR(MAR):
         mask = torch.ones(bsz, self.seq_len, device=self.mask_token.device)
         tokens = torch.zeros(bsz, self.seq_len, self.token_embed_dim, device=self.mask_token.device)
 
+        orders = self.sample_orders(bsz)
+        order_rank = torch.empty_like(orders)
+        order_rank_values = torch.arange(
+            self.seq_len,
+            device=orders.device,
+            dtype=orders.dtype,
+        ).unsqueeze(0).expand_as(orders)
+        order_rank.scatter_(dim=1, index=orders, src=order_rank_values)
+
         indices = list(range(num_iter))
         if progress:
             indices = tqdm(indices)
@@ -1183,7 +1312,7 @@ class RevealMAR(MAR):
             assert torch.all(masked_counts == masked_counts[0]), "Expected equal masked-token count per sample"
             masked_token_count = int(masked_counts[0].item())
             planner_scores_for_budget = None
-            if self.sampling_policy == 'planner':
+            if self.sampling_policy in ('planner', 'planner_frontier', 'planner_reverse'):
                 sampling_scores_masked, masked_positions, masked_coords = self._compute_masked_planner_scores(z_cond, mask)
                 planner_scores_for_budget = sampling_scores_masked
                 uncertainty_scores_masked = None
@@ -1229,7 +1358,7 @@ class RevealMAR(MAR):
                 previous_soft_budget = int(reveal_count)
             selection_scores_masked = sampling_scores_masked
             intervention_active = (
-                self.sampling_policy == 'planner'
+                self.sampling_policy in ('planner', 'planner_frontier', 'planner_reverse')
                 and intervention_policy in ('random', 'confidence', 'entropy')
                 and intervention_steps > 0
                 and step < intervention_steps
@@ -1247,10 +1376,38 @@ class RevealMAR(MAR):
                     selection_scores_masked = intervention_uncertainty if intervention_policy == 'entropy' else -intervention_uncertainty
                 intervention_applied_steps += 1
             if self.sampling_policy == 'planner' and not intervention_active:
-                mask_to_pred = self._select_planner_reveal_mask(z_cond, mask, reveal_count)
+                mask_to_pred = self._select_reveal_mask_from_scores(
+                    mask,
+                    reveal_count,
+                    selection_scores_masked,
+                    masked_positions,
+                    masked_coords,
+                    largest=True,
+                )
+            elif self.sampling_policy == 'planner_reverse' and not intervention_active:
+                mask_to_pred = self._select_reveal_mask_from_scores(
+                    mask,
+                    reveal_count,
+                    selection_scores_masked,
+                    masked_positions,
+                    masked_coords,
+                    largest=False,
+                )
+            elif self.sampling_policy == 'planner_frontier' and not intervention_active:
+                mask_to_pred = self._select_frontier_rerank_mask(
+                    mask,
+                    reveal_count,
+                    selection_scores_masked,
+                    masked_positions,
+                    order_rank,
+                )
             else:
                 mask_to_pred = self._select_reveal_mask_from_scores(
-                    mask, reveal_count, selection_scores_masked, masked_positions, masked_coords
+                    mask,
+                    reveal_count,
+                    selection_scores_masked,
+                    masked_positions,
+                    masked_coords,
                 )
             if not mask_to_pred.any() and masked_token_count > 0:
                 mask_to_pred = self._fallback_reveal_mask(mask, reveal_all=(step >= num_iter - 1))

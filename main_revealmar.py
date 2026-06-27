@@ -240,8 +240,18 @@ def get_args_parser():
                         help='Print every N forward passes when --log_ref_target_debug is set')
 
     parser.add_argument('--sampling_policy', default='baseline', type=str,
-                        choices=['baseline', 'planner', 'random', 'confidence', 'entropy'],
+                        choices=[
+                            'baseline',
+                            'planner',
+                            'planner_frontier',
+                            'planner_reverse',
+                            'random',
+                            'confidence',
+                            'entropy',
+                        ],
                         help='sampling policy for RevealMAR evaluation/sampling')
+    parser.add_argument('--planner_frontier_multiplier', default=4.0, type=float,
+                        help='Frontier width multiplier for planner_frontier: frontier_size = ceil(multiplier * reveal_count).')
     parser.add_argument('--uncertainty_mc_samples', default=2, type=int,
                         help='MC diffusion samples for confidence/entropy uncertainty policies')
     parser.add_argument('--uncertainty_policy_temperature', default=1.0, type=float,
@@ -404,6 +414,7 @@ def main(args):
         log_ref_target_debug=args.log_ref_target_debug,
         log_ref_target_freq=args.log_ref_target_freq,
         sampling_policy=args.sampling_policy,
+        planner_frontier_multiplier=args.planner_frontier_multiplier,
         uncertainty_mc_samples=args.uncertainty_mc_samples,
         uncertainty_policy_temperature=args.uncertainty_policy_temperature,
         candidate_selection_mode=args.candidate_selection_mode,
